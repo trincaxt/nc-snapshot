@@ -80,7 +80,7 @@ Everything in the store directory. Combines state + partition + small dirs.
 > 💡 Use `--output-dir` to auto-name the file by epoch (e.g. `snapshot-20536-20536.tar.zst`).  
 > Use `-o` only when you need a specific fixed filename.
 
-### Grandão — Partition Snapshot (once a week/month)
+### Full — Partition Snapshot (once a week/month)
 
 ```bash
 ./target/release/nc-snapshot create \
@@ -103,7 +103,7 @@ Everything in the store directory. Combines state + partition + small dirs.
 ```
 → Creates `~/snapshots/state/state_latest.tar.zst` ✅
 
-### Incremental / Complemento (following week)
+### Incremental / Complement (following week)
 
 ```bash
 # Get the final epoch from the previous grandão metadata.json and pass it to --epoch-limit
