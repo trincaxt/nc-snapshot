@@ -7,7 +7,7 @@
 
 Fast, production-grade snapshot tool for Nine Chronicles blockchain nodes, built in Rust.
 
-Replaces the [NineChronicles.Snapshot](https://github.com/planetarium/NineChronicles.Snapshot) C# tool with **~40x faster** performance.
+Replaces the [NineChronicles.Snapshot](https://github.com/planetarium/NineChronicles.Snapshot) C# tool with **~7x faster** performance.
 
 ## Quick Start
 
