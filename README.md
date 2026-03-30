@@ -7,13 +7,49 @@
 
 Fast, production-grade snapshot tool for Nine Chronicles blockchain nodes, built in Rust.
 
-Replaces the [NineChronicles.Snapshot](https://github.com/planetarium/NineChronicles.Snapshot) C# tool with **~40x faster** performance.
+Replaces the [NineChronicles.Snapshot](https://github.com/planetarium/NineChronicles.Snapshot) C# tool with **~7x faster** performance.
+
+## Recent Changes (2026-03-29)
+
+### Bridge Update
+- **Complete Metadata Format**: Bridge now generates full BlockHeader JSON (same as C# original)
+- **Self-Contained**: Bridge is now included within the project at `bridge-bin/`
+
+### Metadata Format
+The Bridge generates complete metadata JSON identical to the C# original:
+```json
+{
+  "Index": 17829893,
+  "Hash": "...",
+  "PreviousHash": "...",
+  "Timestamp": "...",
+  "Miner": "...",
+  "PublicKey": "...",
+  "TxHash": "...",
+  "StateRootHash": "...",
+  "LastCommit": {...},
+  "APV": "200410/...",
+  "PreviousBlockEpoch": 0,
+  "PreviousTxEpoch": 0,
+  "BlockEpoch": 20540,
+  "TxEpoch": 20540
+}
+```
+
+### Compatibility
+- **100% compatible** with snapshots from original C# tool
+- **Metadata format** matches original (full BlockHeader + Epochs)
+- **Archive format** (tar.zst) identical across all implementations
+- **Restore** works with any Nine Chronicles node
 
 ## Quick Start
 
 ```bash
 # Base snapshot — auto-named by epoch
 ./nc-snapshot create --mode partition --apv "<APV>" -s ~/9c-blockchain --output-dir ~/snapshots/base
+
+# Partition snapshot with epoch limit (incremental)
+./nc-snapshot create --mode partition --apv "<APV>" -s ~/9c-blockchain --output-dir ~/snapshots/base --epoch-limit 20536
 
 # State snapshot — daily
 ./nc-snapshot create --mode state --apv "<APV>" -s ~/9c-blockchain --output-dir ~/snapshots/state
