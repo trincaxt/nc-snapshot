@@ -1,0 +1,34 @@
+[2m2026-04-11T18:12:07.638692Z[0m [32m INFO[0m === nc-pruner prune (Selective Streaming Copy) ===
+[2m2026-04-11T18:12:07.638734Z[0m [32m INFO[0m Source (READONLY): "/home/vrunnx/9c-blockchain"
+[2m2026-04-11T18:12:07.638740Z[0m [32m INFO[0m Auto-detecting last 3 state root(s) from chain/...
+[2m2026-04-11T18:12:07.651054Z[0m [32m INFO[0m Discovering chain tip...
+[2m2026-04-11T18:12:07.651569Z[0m [32m INFO[0m No 'tip' key found. Scanning Libplanet 'I' (0x49) index for highest block...
+[2m2026-04-11T18:12:13.586991Z[0m [32m INFO[0m Tip hash found: e05b5c5a8a228061f2d17b5666fe176870130403665ee01d2f4964864ed038bd at Index: 17974882
+[2m2026-04-11T18:12:13.598718Z[0m [32m INFO[0m Retrieved StateRootHash (-0 from tip): 76d5474ce928e2438a566f553153009cb3b852de9a5aa87903cd0d8c74ae61bc
+[2m2026-04-11T18:12:13.609304Z[0m [32m INFO[0m Retrieved StateRootHash (-1 from tip): 0b98e71c28c3f3a8e682c82ccf215a7a10a7f0d07af1453a6c0fb4ea094759c2
+[2m2026-04-11T18:12:13.618913Z[0m [32m INFO[0m Retrieved StateRootHash (-2 from tip): 512ff9a0a22cb94b9481599b34121bc71492ce78520837982bba47053901d4cb
+[2m2026-04-11T18:12:13.621937Z[0m [32m INFO[0m   Root[0]: 76d5474ce928e2438a566f553153009cb3b852de9a5aa87903cd0d8c74ae61bc
+[2m2026-04-11T18:12:13.621963Z[0m [32m INFO[0m   Root[1]: 0b98e71c28c3f3a8e682c82ccf215a7a10a7f0d07af1453a6c0fb4ea094759c2
+[2m2026-04-11T18:12:13.621967Z[0m [32m INFO[0m   Root[2]: 512ff9a0a22cb94b9481599b34121bc71492ce78520837982bba47053901d4cb
+[2m2026-04-11T18:12:13.621978Z[0m [32m INFO[0m Target: "/home/vrunnx/states-test/snapshot_v10"
+[2m2026-04-11T18:12:13.621985Z[0m [32m INFO[0m Creating Zero-Cost File System Checkpoint (Hard Links) for states/ DB...
+[2m2026-04-11T18:12:13.630340Z[0m [32m INFO[0m Filesystem Hard-link Checkpoint created successfully at "/home/vrunnx/states-test/snapshot_v10/states_checkpoint_tmp"
+[2m2026-04-11T18:12:13.630371Z[0m [32m INFO[0m Phase 1/2: Collecting reachable nodes from 3 root(s)...
+[2m2026-04-11T18:12:13.630377Z[0m [32m INFO[0m Source (ReadOnly): "/home/vrunnx/states-test/snapshot_v10/states_checkpoint_tmp"
+[2m2026-04-11T18:12:13.630384Z[0m [32m INFO[0m Target: "/home/vrunnx/states-test/snapshot_v10"
+[2m2026-04-11T18:12:13.632060Z[0m [32m INFO[0m states/ DB column families: ["default"]
+[2m2026-04-11T18:12:13.772957Z[0m [32m INFO[0m RocksDB estimates 78224683 keys
+[2m2026-04-11T18:12:14.802943Z[0m [32m INFO[0m Root[0] 76d5474ce928e243: discovered 507 new nodes (total: 507)
+[2m2026-04-11T18:12:14.803221Z[0m [32m INFO[0m Root[1] 0b98e71c28c3f3a8: discovered 47 new nodes (total: 554)
+[2m2026-04-11T18:12:14.803372Z[0m [32m INFO[0m Root[2] 512ff9a0a22cb94b: discovered 25 new nodes (total: 579)
+[2m2026-04-11T18:12:14.803399Z[0m [32m INFO[0m Phase 1 complete: 579 reachable nodes found in 1.2s
+[2m2026-04-11T18:12:14.803406Z[0m [32m INFO[0m Phase 2/2: Creating clean DB via SST Streaming Copy...
+[2m2026-04-11T18:12:14.803410Z[0m [32m INFO[0m   Source (ReadOnly): "/home/vrunnx/states-test/snapshot_v10/states_checkpoint_tmp"
+[2m2026-04-11T18:12:14.803418Z[0m [32m INFO[0m   Target: "/home/vrunnx/states-test/snapshot_v10"
+[2m2026-04-11T18:12:14.805043Z[0m [32m INFO[0m Source DB size: 39.73 GiB
+[2m2026-04-11T18:12:14.805052Z[0m [32m INFO[0m Available disk space: 118.45 GiB
+[2m2026-04-11T18:12:18.771333Z[0m [32m INFO[0m Temporary checkpoint removed.
+Error: RocksDB iteration error during SST copy
+
+Caused by:
+    IO error: No such file or directory: While open a file for random read: /home/vrunnx/states-test/snapshot_v10/states_checkpoint_tmp/041670.sst: No such file or directory

@@ -1,0 +1,339 @@
+warning: constant `CHAIN_TIP_PREFIX` is never used
+  --> src/trie/chain_reader.rs:28:7
+   |
+28 | const CHAIN_TIP_PREFIX: &[u8] = b"chain-tip/";
+   |       ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `BLOCK_PREFIX` is never used
+  --> src/trie/chain_reader.rs:29:7
+   |
+29 | const BLOCK_PREFIX: &[u8] = b"block/";
+   |       ^^^^^^^^^^^^
+
+warning: constant `BLOCK_INDEX_PREFIX` is never used
+  --> src/trie/chain_reader.rs:30:7
+   |
+30 | const BLOCK_INDEX_PREFIX: &[u8] = b"block-index/";
+   |       ^^^^^^^^^^^^^^^^^^
+
+warning: function `find_chain_tip` is never used
+   --> src/trie/chain_reader.rs:181:4
+    |
+181 | fn find_chain_tip(db: &DBWithThreadMode<MultiThreaded>) -> Result<Vec<u...
+    |    ^^^^^^^^^^^^^^
+
+warning: function `extract_block_index` is never used
+   --> src/trie/chain_reader.rs:271:4
+    |
+271 | fn extract_block_index(block: &BencodexValue) -> Result<u64> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_block_hash_by_index` is never used
+   --> src/trie/chain_reader.rs:292:4
+    |
+292 | fn get_block_hash_by_index(db: &DBWithThreadMode<MultiThreaded>, index:...
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `nc-snapshot-rs` (lib) generated 6 warnings
+warning: methods `as_list`, `as_text`, and `is_null` are never used
+   --> src/trie/bencodex.rs:83:12
+    |
+ 81 | impl BencodexValue {
+    | ------------------ methods in this implementation
+ 82 |     /// Try to extract as a list.
+ 83 |     pub fn as_list(&self) -> Option<&[BencodexValue]> {
+    |            ^^^^^^^
+...
+ 99 |     pub fn as_text(&self) -> Option<&str> {
+    |            ^^^^^^^
+...
+107 |     pub fn is_null(&self) -> bool {
+    |            ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `encode` is never used
+   --> src/trie/bencodex.rs:332:8
+    |
+332 | pub fn encode(value: &BencodexValue) -> Vec<u8> {
+    |        ^^^^^^
+
+warning: function `encode_into` is never used
+   --> src/trie/bencodex.rs:338:4
+    |
+338 | fn encode_into(value: &BencodexValue, buf: &mut Vec<u8>) {
+    |    ^^^^^^^^^^^
+
+warning: method `is_empty` is never used
+  --> src/trie/bloom.rs:96:12
+   |
+35 | impl ReachableSet {
+   | ----------------- method in this implementation
+...
+96 |     pub fn is_empty(&self) -> bool {
+   |            ^^^^^^^^
+
+warning: constant `CHAIN_TIP_PREFIX` is never used
+  --> src/trie/chain_reader.rs:28:7
+   |
+28 | const CHAIN_TIP_PREFIX: &[u8] = b"chain-tip/";
+   |       ^^^^^^^^^^^^^^^^
+
+warning: function `find_state_roots` is never used
+   --> src/trie/chain_reader.rs:546:8
+    |
+546 | pub fn find_state_roots(store_path: &Path, n: usize) -> Result<Vec<(Vec...
+    |        ^^^^^^^^^^^^^^^^
+
+warning: field `path` is never read
+  --> src/trie/node.rs:34:9
+   |
+32 |     Short {
+   |     ----- field in this variant
+33 |         /// Nibble-encoded path segment.
+34 |         path: Vec<u8>,
+   |         ^^^^
+   |
+   = note: `TrieNode` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `value` is never read
+  --> src/trie/node.rs:46:9
+   |
+42 |     Full {
+   |     ---- field in this variant
+...
+46 |         value: Option<Vec<u8>>,
+   |         ^^^^^
+   |
+   = note: `TrieNode` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `sha256` is never used
+   --> src/trie/node.rs:315:8
+    |
+315 | pub fn sha256(data: &[u8]) -> NodeHash {
+    |        ^^^^^^
+
+warning: fields `bytes_written` and `elapsed_secs` are never read
+  --> src/trie/sst_writer.rs:36:9
+   |
+24 | pub struct SstWriteStats {
+   |            ------------- fields in this struct
+...
+36 |     pub bytes_written: u64,
+   |         ^^^^^^^^^^^^^
+37 |     /// Time taken for the SST generation + ingest.
+38 |     pub elapsed_secs: f64,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `SstWriteStats` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: `nc-snapshot-rs` (bin "nc-pruner") generated 15 warnings (5 duplicates)
+    Finished `release` profile [optimized] target(s) in 0.09s
+     Running `target/release/nc-pruner prune --store-path /home/vrunnx/9c-blockchain --target-path /home/vrunnx/states-test/snapshot_v9 --depth 10`
+[2m2026-04-11T11:33:12.671175Z[0m [32m INFO[0m === nc-pruner prune (Selective Streaming Copy) ===
+[2m2026-04-11T11:33:12.671199Z[0m [32m INFO[0m Source (READONLY): "/home/vrunnx/9c-blockchain"
+[2m2026-04-11T11:33:12.671205Z[0m [32m INFO[0m Auto-detecting last 10 state root(s) from chain/...
+[2m2026-04-11T11:33:12.677537Z[0m [32m INFO[0m Discovering chain tip...
+[2m2026-04-11T11:33:12.677953Z[0m [32m INFO[0m No 'tip' key found. Scanning Libplanet 'I' (0x49) index for highest block...
+[2m2026-04-11T11:33:17.546619Z[0m [32m INFO[0m Tip hash found: 9e12726f139b1fe2374a6442307d8e76dfbdbb6fc5fa451e8e89925129ca7386 at Index: 17971899
+[2m2026-04-11T11:33:17.558248Z[0m [32m INFO[0m Retrieved StateRootHash (-0 from tip): 52922ffa622bfb58d6bd2551541637a3bca9cf7b4bfd93875e7e0c431102704b
+[2m2026-04-11T11:33:17.567676Z[0m [32m INFO[0m Retrieved StateRootHash (-1 from tip): b8e18f34f219d0d52726693b68cb1ca2a7ed322f23ef25c1119596979f4d72ba
+[2m2026-04-11T11:33:17.575485Z[0m [32m INFO[0m Retrieved StateRootHash (-2 from tip): 8491e52fd9cf1a31f86c61838a8bdd5e756bc06ad77443379363caf6dd57e65e
+[2m2026-04-11T11:33:17.583429Z[0m [32m INFO[0m Retrieved StateRootHash (-3 from tip): 0c069795bf6b4ca427a3ac72c50f9b186c623723f7bacbb48f224f00e911f7cf
+[2m2026-04-11T11:33:17.591177Z[0m [32m INFO[0m Retrieved StateRootHash (-4 from tip): 37018dba2e2d8d8bb58a0a99bd8dba3ce2c1913164274d4d6aa384354a0cc413
+[2m2026-04-11T11:33:17.598801Z[0m [32m INFO[0m Retrieved StateRootHash (-5 from tip): 76c533b1e3208af31ae69927374046671ea9b5a2aa51bac811a3d8d3e5842b77
+[2m2026-04-11T11:33:17.607509Z[0m [32m INFO[0m Retrieved StateRootHash (-6 from tip): c0972f4eb87c774860b1718608724bee08b1a789c7086bea7f1e361d3a811cf4
+[2m2026-04-11T11:33:17.616481Z[0m [32m INFO[0m Retrieved StateRootHash (-7 from tip): 7537ad2541825a068005a1c0b35fc4655c9ef28b0f4f4db4ee7140fb7734aab3
+[2m2026-04-11T11:33:17.624592Z[0m [32m INFO[0m Retrieved StateRootHash (-8 from tip): e1fe59e737546cd2f8ca93f0d8e665fcc076f726466923409b7a0ba5ab5ec485
+[2m2026-04-11T11:33:17.632925Z[0m [32m INFO[0m Retrieved StateRootHash (-9 from tip): dd0c5c7785f91d89a69e1f4109bf666863a18521f3b43f8226301fdaeb3ed09c
+[2m2026-04-11T11:33:17.636304Z[0m [32m INFO[0m   Root[0]: 52922ffa622bfb58d6bd2551541637a3bca9cf7b4bfd93875e7e0c431102704b
+[2m2026-04-11T11:33:17.636334Z[0m [32m INFO[0m   Root[1]: b8e18f34f219d0d52726693b68cb1ca2a7ed322f23ef25c1119596979f4d72ba
+[2m2026-04-11T11:33:17.636342Z[0m [32m INFO[0m   Root[2]: 8491e52fd9cf1a31f86c61838a8bdd5e756bc06ad77443379363caf6dd57e65e
+[2m2026-04-11T11:33:17.636349Z[0m [32m INFO[0m   Root[3]: 0c069795bf6b4ca427a3ac72c50f9b186c623723f7bacbb48f224f00e911f7cf
+[2m2026-04-11T11:33:17.636359Z[0m [32m INFO[0m   Root[4]: 37018dba2e2d8d8bb58a0a99bd8dba3ce2c1913164274d4d6aa384354a0cc413
+[2m2026-04-11T11:33:17.636375Z[0m [32m INFO[0m   Root[5]: 76c533b1e3208af31ae69927374046671ea9b5a2aa51bac811a3d8d3e5842b77
+[2m2026-04-11T11:33:17.636380Z[0m [32m INFO[0m   Root[6]: c0972f4eb87c774860b1718608724bee08b1a789c7086bea7f1e361d3a811cf4
+[2m2026-04-11T11:33:17.636389Z[0m [32m INFO[0m   Root[7]: 7537ad2541825a068005a1c0b35fc4655c9ef28b0f4f4db4ee7140fb7734aab3
+[2m2026-04-11T11:33:17.636397Z[0m [32m INFO[0m   Root[8]: e1fe59e737546cd2f8ca93f0d8e665fcc076f726466923409b7a0ba5ab5ec485
+[2m2026-04-11T11:33:17.636400Z[0m [32m INFO[0m   Root[9]: dd0c5c7785f91d89a69e1f4109bf666863a18521f3b43f8226301fdaeb3ed09c
+[2m2026-04-11T11:33:17.636422Z[0m [32m INFO[0m Target: "/home/vrunnx/states-test/snapshot_v9"
+[2m2026-04-11T11:33:17.636438Z[0m [32m INFO[0m Creating Zero-Cost File System Checkpoint (Hard Links) for states/ DB...
+[2m2026-04-11T11:33:17.649159Z[0m [32m INFO[0m Filesystem Hard-link Checkpoint created successfully at "/home/vrunnx/states-test/snapshot_v9/states_checkpoint_tmp"
+[2m2026-04-11T11:33:17.649235Z[0m [32m INFO[0m Phase 1/2: Collecting reachable nodes from 10 root(s)...
+[2m2026-04-11T11:33:17.649245Z[0m [32m INFO[0m Source (ReadOnly): "/home/vrunnx/states-test/snapshot_v9/states_checkpoint_tmp"
+[2m2026-04-11T11:33:17.649264Z[0m [32m INFO[0m Target: "/home/vrunnx/states-test/snapshot_v9"
+[2m2026-04-11T11:33:17.650816Z[0m [32m INFO[0m states/ DB column families: ["default"]
+[2m2026-04-11T11:33:17.771448Z[0m [32m INFO[0m RocksDB estimates 96091668 keys
+[2m2026-04-11T11:33:37.015667Z[0m [33m WARN[0m Node not found in states/ DB: 1b16b1df538ba12dc3f97edbb85caa7050d46c148134290feba80f8236c83db9
+[2m2026-04-11T11:35:40.758739Z[0m [33m WARN[0m Node not found in states/ DB: 28a2c38b0934225a8f2327b9bd8cf7c7eaf3551bde8203f44248c011938e9770
+[2m2026-04-11T11:35:40.758782Z[0m [33m WARN[0m Node not found in states/ DB: 77cfad5273885820b69e61c2106ae06583f69c7f6d82a229b59e5f1b984164be
+[2m2026-04-11T11:35:40.758794Z[0m [33m WARN[0m Node not found in states/ DB: 234b49b036ad8bcf577f71160f36b394fa8ab59b7b460e95c820a0091eaa5bb0
+[2m2026-04-11T11:35:40.758801Z[0m [33m WARN[0m Node not found in states/ DB: 45c8a87009caf8f9d3ecf58618fa6e2b14fe0edb2283d373e3c190c56eb96d8a
+[2m2026-04-11T11:35:40.759055Z[0m [33m WARN[0m Node not found in states/ DB: 3991e04dd808dc0bc24b21f5adb7bf1997312f8700daf1334bf34936e8a0813a
+[2m2026-04-11T11:35:40.759674Z[0m [33m WARN[0m Node not found in states/ DB: 8850c08af8bea31a8688f98638ec0459f62fb3512a5f1d3ff0595cdbb00ef37e
+[2m2026-04-11T11:35:40.759694Z[0m [33m WARN[0m Node not found in states/ DB: a8f74ec8420701df93d2a583f3a1b38360afc8b9253b3232555125fc7082127f
+[2m2026-04-11T11:35:40.759702Z[0m [33m WARN[0m Node not found in states/ DB: 1af5e747fc81a7f3149af024db2e5025b6749a000d66b22e665acdd45b8dbd17
+[2m2026-04-11T11:35:40.759714Z[0m [33m WARN[0m Node not found in states/ DB: 49f1b85f25ac28b2915ebaa0262cbefbfc9cf86d6b524ca477b2b1d84af18224
+[2m2026-04-11T11:35:40.759725Z[0m [33m WARN[0m Node not found in states/ DB: 2df68143ccb6384443066e215523968a609803cf8c457bda3ccdaec63aa0e319
+[2m2026-04-11T11:35:40.759912Z[0m [33m WARN[0m Node not found in states/ DB: 0ffbb35d51ff21e65469e945767027bef12907890d221a7b33c9de88bcbef25b
+[2m2026-04-11T11:35:40.759935Z[0m [33m WARN[0m Node not found in states/ DB: 409c79e0f49965cc4b6bc9a03cb920845eb4c14a9c7a320e915a05902e56363e
+[2m2026-04-11T11:35:40.759980Z[0m [33m WARN[0m Node not found in states/ DB: 978ac75b2444173ceb4060b3ff1b59ecc8a5e8f8e75deddd691bae1bc73bc30c
+[2m2026-04-11T11:35:40.759993Z[0m [33m WARN[0m Node not found in states/ DB: e774389536d1ecb80a21dc517d73b4d01b3633e32aa05fcee40a0eced0c2213d
+[2m2026-04-11T11:35:40.760027Z[0m [33m WARN[0m Node not found in states/ DB: bc72854de3450fbb8396be17618de14b0de9998e0a0c9abb2470674a11b5c311
+[2m2026-04-11T11:35:40.760037Z[0m [33m WARN[0m Node not found in states/ DB: f5ead0d4a7a386431f0cc7966978285d1e802c4aa399c471d66925a105c44a62
+[2m2026-04-11T11:35:40.760043Z[0m [33m WARN[0m Node not found in states/ DB: b74293091924d8c06d02f389daeb8670becf125daab9a7b88a2f1cbb3db8f8f3
+[2m2026-04-11T11:35:40.760049Z[0m [33m WARN[0m Node not found in states/ DB: 5f90371603bac99b1d27e9b2cefc578c7f643fb4a8a3a934827cc4a4b4d28e93
+[2m2026-04-11T11:35:40.760328Z[0m [33m WARN[0m Node not found in states/ DB: 5ce7c91e1b6bb014e79c2ad73d6fb9d64c2ed2d782b35871bfaf34b837f3bd82
+[2m2026-04-11T11:35:40.760346Z[0m [33m WARN[0m Node not found in states/ DB: 26c3b4ca8cdd4e1436ff74765bcf637996359a0571a08a8fee7c8926ee540bcc
+[2m2026-04-11T11:35:40.760421Z[0m [33m WARN[0m Node not found in states/ DB: 376163244ad129e637703566d213efaf3c878a68a393c9c8d51fd8d3dc7cb9ad
+[2m2026-04-11T11:35:40.760440Z[0m [33m WARN[0m Node not found in states/ DB: 33e12fbe287ddd463c1f33224aae848064caa7f64fc7c3e43f813ce9a4a5f877
+[2m2026-04-11T11:35:40.760449Z[0m [33m WARN[0m Node not found in states/ DB: 816c9b6018848819f192f58e2fed56a4ad7e3e393ced891502294415f2cc4f19
+[2m2026-04-11T11:35:40.760524Z[0m [33m WARN[0m Node not found in states/ DB: 3ed5c8a239cc82ef647c1445db24bf0318a6503fce85d9b55f417079635037c8
+[2m2026-04-11T11:35:40.760548Z[0m [33m WARN[0m Node not found in states/ DB: de1f3d2473ff7eedef2fba32bdbd31f6657fdad7c948d9ea155347220a9ac680
+[2m2026-04-11T11:35:40.760555Z[0m [33m WARN[0m Node not found in states/ DB: 2ad7be25e4aaa97303bc14a1826c97652936688dd9582e2f9ac4a7574bc55da0
+[2m2026-04-11T11:35:40.761691Z[0m [33m WARN[0m Node not found in states/ DB: 7b33549235c36163ad2d83098d93e3f219adca11ebdfd1badd11feb66b7c5d00
+[2m2026-04-11T11:35:40.761717Z[0m [33m WARN[0m Node not found in states/ DB: df0c212eb56526891629367fe889cfce0ea89a04e21d11a05b19ff9231802b4c
+[2m2026-04-11T11:35:40.761796Z[0m [33m WARN[0m Node not found in states/ DB: b50b84e3ac47d57d0efb9c85b3e90a91126ed00aa1cca2f77d336523de9dc96c
+[2m2026-04-11T11:35:40.762075Z[0m [33m WARN[0m Node not found in states/ DB: 1bd96c8d5bce17827b894e01d4eb87bd853bc6a48baee9e6151ce568ae43ad39
+[2m2026-04-11T11:35:40.762503Z[0m [33m WARN[0m Node not found in states/ DB: cfa9e5af9d0c1b732f7e1e60fb66301189116c5538e156965f480a69ff8e4e72
+[2m2026-04-11T11:35:40.763199Z[0m [33m WARN[0m Node not found in states/ DB: 5eb4a120ad93f92a73a93eb18b3273488b1ffed45d320d9ff73c3a7744528d1c
+[2m2026-04-11T11:35:40.763212Z[0m [33m WARN[0m Node not found in states/ DB: e9fa72958f47de790a80e1009e13d2593d4a283076e6cd6c358dcfb72ced20e2
+[2m2026-04-11T11:35:40.763218Z[0m [33m WARN[0m Node not found in states/ DB: ef259ea0a474394a6696e869f6de1a3f2d39542d1e9f9df2b213e19905f1a964
+[2m2026-04-11T11:35:40.763848Z[0m [33m WARN[0m Node not found in states/ DB: 8358b0cf6e8f7fe2c22deda2d40cd18168d901bf7e3fdb5a54f93359bf6665d0
+[2m2026-04-11T11:35:40.763861Z[0m [33m WARN[0m Node not found in states/ DB: d988d86e2fb4c6d49e0f7fec7586f7cc34d818ee2278d36df2c9e9280de5a747
+[2m2026-04-11T11:35:40.763868Z[0m [33m WARN[0m Node not found in states/ DB: ac5e8131f6463ac662cac47f65646b2fc1f8ddc68f9328c47c468679f6a2f652
+[2m2026-04-11T11:35:40.765385Z[0m [33m WARN[0m Node not found in states/ DB: 0628b45b0ee60f126a6d81396ad760f7863a7a00fbba3f5afa3291c2f91f8d5d
+[2m2026-04-11T11:35:40.766003Z[0m [33m WARN[0m Node not found in states/ DB: e093eaf15561862d9e37651709a479ec5afd25b6baaa2ce4180265e3d8b030a7
+[2m2026-04-11T11:35:40.766016Z[0m [33m WARN[0m Node not found in states/ DB: eb5a20224d9ecf7a5da0d60692889f9a4bed95ab3575902a53a1ff6b9c258202
+[2m2026-04-11T11:35:40.766126Z[0m [33m WARN[0m Node not found in states/ DB: 480593f6586f6d4c5ae24493c03d30dad65fdd0858d45ac0719e461de2e12521
+[2m2026-04-11T11:35:40.766764Z[0m [33m WARN[0m Node not found in states/ DB: 5eac6f2b799a1fc20a50f005f2df8783fefec63595787804b4418ece2b3d0717
+[2m2026-04-11T11:35:40.766779Z[0m [33m WARN[0m Node not found in states/ DB: 31f48810fa91236281c165659d65003cfb611205a52c1ff6e02c019b86625dda
+[2m2026-04-11T11:35:40.768701Z[0m [33m WARN[0m Node not found in states/ DB: 0dff50a72339a6666aa6ad575fe4a5545f8538e5a40f9cf12815b0adf4e5ebbc
+[2m2026-04-11T11:35:40.768720Z[0m [33m WARN[0m Node not found in states/ DB: ced92cc2cc3417e29eced7945872eae48f03604271cfb63d87d340599262fabe
+[2m2026-04-11T11:35:40.769345Z[0m [33m WARN[0m Node not found in states/ DB: d2f6b0e2f50d6bc70a9057140a1b4b0b762c95faba6a687d7c35ff330980052d
+[2m2026-04-11T11:35:40.769357Z[0m [33m WARN[0m Node not found in states/ DB: c220e7aa2a79367b4fe3e11524be3ade6570a9d784754f2268db54a03676c838
+[2m2026-04-11T11:35:40.769365Z[0m [33m WARN[0m Node not found in states/ DB: da3c5c2c73abc8af010e0d7b627557ca96fb0cb7d5671a5f3484e3a788970279
+[2m2026-04-11T11:35:40.775361Z[0m [33m WARN[0m Node not found in states/ DB: e6131567ec4998dec5b064849ff1322e45df876fd6e129c82257f71babd5db09
+[2m2026-04-11T11:35:40.776532Z[0m [33m WARN[0m Node not found in states/ DB: 70448a88a5d289c79f52552edbbe4cca3788af67d3dc98af8f5efa468912bca5
+[2m2026-04-11T11:35:40.776545Z[0m [33m WARN[0m Node not found in states/ DB: 3d47ddb54ac57d21f48df5e99552afd2c902e2c6a9a92c170972f0253ecea11b
+[2m2026-04-11T11:35:40.776550Z[0m [33m WARN[0m Node not found in states/ DB: 44086ac60da002c67f7a2b5349c70d3bb5c10ae419a233a2ee02e9dc9f13d5be
+[2m2026-04-11T11:35:40.778921Z[0m [33m WARN[0m Node not found in states/ DB: a1c1070067a74ea2cc52a392fffe48a3faa634680d39e5118a886267f9604bed
+[2m2026-04-11T11:35:40.778950Z[0m [33m WARN[0m Node not found in states/ DB: 3315163b561d4c7ebab340a9c0a99f60e167234e913d5d1102843d8232d703c4
+[2m2026-04-11T11:35:40.780028Z[0m [33m WARN[0m Node not found in states/ DB: d0306e81e1a530dcab4541ec85858acba49c5752f79968a8830bae44277a17ed
+[2m2026-04-11T11:35:40.780243Z[0m [33m WARN[0m Node not found in states/ DB: e4fc412778f96355abdd5e0e3f7448e85054a3e0c5beb48369a0299046282ef1
+[2m2026-04-11T11:35:40.781117Z[0m [33m WARN[0m Node not found in states/ DB: c87ce493f749d686c672938c44905e95ef76e6f07632eba02f598a9174d6068d
+[2m2026-04-11T11:35:40.782589Z[0m [33m WARN[0m Node not found in states/ DB: 9bc2b5c16656cff106a52029829b9035e0bc51203fb26fb749279ab68a6908b1
+[2m2026-04-11T11:35:45.618340Z[0m [33m WARN[0m Node not found in states/ DB: 58cb28c3048aee77fe959f15c836991f88597e3e3e292ab29831056d9366b0d9
+[2m2026-04-11T11:35:45.618379Z[0m [33m WARN[0m Node not found in states/ DB: c498347141fd2ba40049a6d6b27ea39204cf838ab5b324a523035cad88c65a75
+[2m2026-04-11T11:35:45.622485Z[0m [33m WARN[0m Node not found in states/ DB: 8de0d96eb9063641f36fe8e5f7a81b6c59e6da07e9a3d17316fb5f01788302c2
+[2m2026-04-11T11:35:45.622511Z[0m [33m WARN[0m Node not found in states/ DB: 225ca67d4c5a6f35efb5e9d6a1fa5b4b2007d45dd6a4149381884d44b4a05208
+[2m2026-04-11T11:35:45.626518Z[0m [33m WARN[0m Node not found in states/ DB: eca24ce26dc947fae49f37ecf53866e05fc10ef7e303931d38b169e1f485f367
+[2m2026-04-11T11:35:45.626541Z[0m [33m WARN[0m Node not found in states/ DB: 8806d6daf37c38bc8867e1e8f62ec832b8bea44d6f8da49d8882a53ef03ad847
+[2m2026-04-11T11:35:45.629810Z[0m [33m WARN[0m Node not found in states/ DB: e0bbb7ce62f633cf27c976f10b5c0161647f7c522d496db8a8ad49973f6517f1
+[2m2026-04-11T11:35:45.634633Z[0m [33m WARN[0m Node not found in states/ DB: 40d251429556c270fa8358412c2666dda2e3445235175cd6ed96b52100c35d45
+[2m2026-04-11T11:35:45.644908Z[0m [33m WARN[0m Node not found in states/ DB: 64bca9d807ae3897c5006ffec083850323af0260160da6154ebaecc6305f3c94
+[2m2026-04-11T11:35:45.644934Z[0m [33m WARN[0m Node not found in states/ DB: 6bf9a1bcf5594c3d0c16c77576b5bd489f96330d5b504dd05788367f087e7e4c
+[2m2026-04-11T11:35:45.644940Z[0m [33m WARN[0m Node not found in states/ DB: 05897e6c6b6ed4dcc7c510c250388d21d08bb367588034bb363de3e8ea6a715e
+[2m2026-04-11T11:35:50.430289Z[0m [33m WARN[0m Node not found in states/ DB: c8c3f915a9a2da7e16ad480621584e8b29aada00d1a1d25e66373453391b7784
+[2m2026-04-11T11:35:50.430328Z[0m [33m WARN[0m Node not found in states/ DB: e1bd9e48f18b5efbdd093c23b8c790f98a6fba7dce9899cf91b89aa602b5315e
+[2m2026-04-11T11:35:50.430471Z[0m [33m WARN[0m Node not found in states/ DB: 2d85afe3aa2e0ebc49df0149cf939feeddbfb9049a1e0c3bd7d8c00a948fece6
+[2m2026-04-11T11:35:50.430488Z[0m [33m WARN[0m Node not found in states/ DB: e0e69c7f4f16174438570e79ef52f5091ff761615a29dc70d3babbb4a099ce33
+[2m2026-04-11T11:35:50.430831Z[0m [33m WARN[0m Node not found in states/ DB: 67f6ff0b0e20202a8e63742adf804355ceaee3ab636ed3065bd535985e7109a8
+[2m2026-04-11T11:35:50.431712Z[0m [33m WARN[0m Node not found in states/ DB: 531f93582404c171d8621e29d2c385f055e25781390438305643ca0dc1702757
+[2m2026-04-11T11:35:50.431738Z[0m [33m WARN[0m Node not found in states/ DB: 9a86ca3142413c56d333cf1fa6e4cd982386e023a88b3bc5d69463d6aec60948
+[2m2026-04-11T11:35:50.431793Z[0m [33m WARN[0m Node not found in states/ DB: 23f962bce63ea0f28eb22a89b6abc7a31e703fc3a120d23d0cfe545722920197
+[2m2026-04-11T11:35:50.431843Z[0m [33m WARN[0m Node not found in states/ DB: ecec1dbe913ddd8c82a77c669b9fee5f4463bba2f2d000025a9d213dd33702ce
+[2m2026-04-11T11:35:50.431851Z[0m [33m WARN[0m Node not found in states/ DB: e467675e0ff7a523987376aafc2f63676b953959096e0e3a40b862dda51463e2
+[2m2026-04-11T11:35:50.431859Z[0m [33m WARN[0m Node not found in states/ DB: f2ec3e061e9806dc5783ef54fcf9365105a15d64cdab717beb3e4f19526fbf3a
+[2m2026-04-11T11:35:50.432492Z[0m [33m WARN[0m Node not found in states/ DB: e6a202c35b7565746921a75a592ebcbbcbce1a0143e3ae5298792e9be8d3bc82
+[2m2026-04-11T11:35:50.433450Z[0m [33m WARN[0m Node not found in states/ DB: 4442400a7ea7e92dba149b4062288224d74337a4dd277482c2609e5a0f30c34b
+[2m2026-04-11T11:35:55.219087Z[0m [33m WARN[0m Node not found in states/ DB: 83805ae0a613d02edc379caa81d00fc6d3be0338bfe133b188ae2840e27c0af0
+[2m2026-04-11T11:35:55.220543Z[0m [33m WARN[0m Node not found in states/ DB: 2448dd5d578a2b73428a863e55b1df70112c0e3d59782e851696458d74024286
+[2m2026-04-11T11:35:55.221037Z[0m [33m WARN[0m Node not found in states/ DB: 7fbb23db56bd3c1e74632f720dacd71d8945530b53cb5c391b81fe7acd4ef18b
+[2m2026-04-11T11:35:55.221573Z[0m [33m WARN[0m Node not found in states/ DB: 651c5eb16a8521f2f58d2a0a2066540f112fd8992af8c8dc924a71f2e31dfb1e
+[2m2026-04-11T11:35:55.223636Z[0m [33m WARN[0m Node not found in states/ DB: 9757db9a4206ffd39dfa764603aef5af6157799847c4b4c2c51c2099c0f9015f
+[2m2026-04-11T11:35:59.978584Z[0m [33m WARN[0m Node not found in states/ DB: 02276cee4c71a834c2bad0a6c9204506195f38e3eeed435896fd3867448fe9a4
+[2m2026-04-11T11:35:59.978619Z[0m [33m WARN[0m Node not found in states/ DB: 09739d9bbe3ea604532a9b6d00f551122d42ae6d6d8b386f2c87b77589a0ff86
+[2m2026-04-11T11:35:59.978627Z[0m [33m WARN[0m Node not found in states/ DB: 62c951a60149a75c9f90306df656321b27e9fc2d277e2e54f04e3d95ccabcfe4
+[2m2026-04-11T11:35:59.985724Z[0m [33m WARN[0m Node not found in states/ DB: c46aa5f7cb7a9685326d86b3f48e9ce38e2ba994671e635879e6c5e00c46ed8b
+[2m2026-04-11T11:35:59.997728Z[0m [33m WARN[0m Node not found in states/ DB: e46d171a6b0c0f80dfbbaabcfe900dd5d1d1f33902514cbef531c51c1e1d64e8
+[2m2026-04-11T11:35:59.998072Z[0m [33m WARN[0m Node not found in states/ DB: 723494ce54acb09ace05d4a23546ac226d3d7df2468e01b7c459d265444d0922
+[2m2026-04-11T11:35:59.998085Z[0m [33m WARN[0m Node not found in states/ DB: 1830ddc25e9b53ac6d714d54b5938ce6d97539a3aba7aa3bb8099497946b07f4
+[2m2026-04-11T11:35:59.998089Z[0m [33m WARN[0m Node not found in states/ DB: 497de1315a769e2427f1912920fc7f7d8b99fb761668bc4db7960c508eccd48d
+[2m2026-04-11T11:36:04.729860Z[0m [33m WARN[0m Node not found in states/ DB: f4fa8df9913b2a477ee2913351f328dba5c4afc57833b4f9b50f2545a91c6a14
+[2m2026-04-11T11:36:04.729899Z[0m [33m WARN[0m Node not found in states/ DB: 5fac00090f2293297a2f8e7bb128c0e3b02d98f039ef68b874fa808f6406cf18
+[2m2026-04-11T11:36:04.729905Z[0m [33m WARN[0m Node not found in states/ DB: f1cc3185a8f36eb9606d19f790f07bde5da9d331b1fdc7a0fb8397979534cdcd
+[2m2026-04-11T11:36:09.385515Z[0m [33m WARN[0m Node not found in states/ DB: ea8168c5d646439e5732053232e28e360cb154d765add9e02c39f5554896a0b1
+[2m2026-04-11T11:36:09.386516Z[0m [33m WARN[0m Node not found in states/ DB: e229dbc52f5846e688995055f2b61d5406f973c09b29ce1b14223896c203ea3d
+[2m2026-04-11T11:36:09.386529Z[0m [33m WARN[0m Node not found in states/ DB: ede1dbcc13ead5ff36a4c0b97b2d194d9241eb2bfbd5f65efada0970f17d1680
+[2m2026-04-11T11:36:09.386534Z[0m [33m WARN[0m Node not found in states/ DB: 5bf2e5a67d3fdd06de729f4f56ac94b96eeebb7a64d6d6411581a8d11792d032
+[2m2026-04-11T11:36:09.390964Z[0m [33m WARN[0m Node not found in states/ DB: 713acfebe6b56bf43b162b37d371768c744459971b83decb23d462223b2ceeab
+[2m2026-04-11T11:36:09.390988Z[0m [33m WARN[0m Node not found in states/ DB: 460932cc5e11009301f2ecaa3a8a13a9dc362744bac27fed45b6fc8abde2f626
+[2m2026-04-11T11:36:09.390994Z[0m [33m WARN[0m Node not found in states/ DB: 2db74d181be468ddd68be36d128426360e7ef134934428684a9ab91304b71b21
+[2m2026-04-11T11:36:09.391025Z[0m [33m WARN[0m Node not found in states/ DB: 22777d15b712468ee109a41a867425a85874eec283e0b833e75d0cc8622215c3
+[2m2026-04-11T11:36:14.053426Z[0m [33m WARN[0m Node not found in states/ DB: c3f8323ce3ffefc0db38cbb009a66452e69b93466104cb20d422b3cde549c63a
+[2m2026-04-11T11:36:18.781038Z[0m [33m WARN[0m Node not found in states/ DB: 0adecd647de4d3ce86905cacf6a28043ec73e355da7948c486b10a811a26bec8
+[2m2026-04-11T11:36:18.781127Z[0m [33m WARN[0m Node not found in states/ DB: 4572591e3d1df2b1badbd264266c8e44c350c4ea5ea609c4a559deed291a0cc0
+[2m2026-04-11T11:36:18.781145Z[0m [33m WARN[0m Node not found in states/ DB: de6f84b5514499b56f42e68a21af9aa8563531b681a39a04c643c39d5a3e2101
+[2m2026-04-11T11:36:18.781706Z[0m [33m WARN[0m Node not found in states/ DB: f7fb5497cc8ff0a990bb10c2eda8021b769deb6728cab1f5fe95d06c9327878e
+[2m2026-04-11T11:36:23.410907Z[0m [33m WARN[0m Node not found in states/ DB: 36834169f633207893441d46a7a3e79399cd16f7b47a21feff36100297934462
+[2m2026-04-11T11:36:36.944769Z[0m [33m WARN[0m Node not found in states/ DB: 63cc9dffd4015d654fb61c33b66fca7b7059c230417430794cf9d12b096dba1f
+[2m2026-04-11T11:36:36.944808Z[0m [33m WARN[0m Node not found in states/ DB: 1294037b66477070032c64d251ffdc490ce7389e2ee721eee7bbe8d57a6b0107
+[2m2026-04-11T11:36:45.974081Z[0m [33m WARN[0m Node not found in states/ DB: 1e9c2267386176fdccafd1e16ccc28a833b6efd99a85d3d553a6987a69e7f49c
+[2m2026-04-11T11:36:50.378779Z[0m [33m WARN[0m Node not found in states/ DB: dbe18525c632384b60969a2fe34d03c2a6fd33cbcaf79a0938ad4c28e6ac0515
+[2m2026-04-11T11:36:50.379111Z[0m [33m WARN[0m Node not found in states/ DB: 2b13e19864cfb4ed0c67398eba68ab6f64cb8803382cd66c10d640340d3e67b2
+[2m2026-04-11T11:36:50.379119Z[0m [33m WARN[0m Node not found in states/ DB: 910d4de5b0062850e9dce2062df4707b0ced4c2ee028b973d0d8936131ff1fbd
+[2m2026-04-11T11:36:50.379126Z[0m [33m WARN[0m Node not found in states/ DB: 2a0e473a145d4c21c4a7bfd06c6afd2c14579182e947c8f7b1e9df75914a2fa1
+[2m2026-04-11T11:36:50.379138Z[0m [33m WARN[0m Node not found in states/ DB: 8bb476f35ffddb49bcc77f84266ac7acdff0fda1e5573df5c585b565fa70d7da
+[2m2026-04-11T11:36:50.380375Z[0m [33m WARN[0m Node not found in states/ DB: 2b26ad65277e924bb48d6fe3e4f353a4897a5668a86abd9049a61c4b536fd60c
+[2m2026-04-11T11:36:54.772292Z[0m [33m WARN[0m Node not found in states/ DB: a27aab9b302e74abff0cce33aa578b0b25d703624a3ac242c5a66184806969e5
+[2m2026-04-11T11:37:15.989244Z[0m [33m WARN[0m Node not found in states/ DB: 00dfffe23964af9b284d121dae476571b7836b8d9e2e5f510d92a840fecc64fe
+[2m2026-04-11T11:37:20.318421Z[0m [33m WARN[0m Node not found in states/ DB: 7f5d25371e58c0f3d5a33511450f73c2e0fa4fac32a92e1cbe64d3bf2fef6328
+[2m2026-04-11T11:37:20.318562Z[0m [33m WARN[0m Node not found in states/ DB: 1a6f17de25155917996fe3aa2f45c9f9da9c96c6a3b5dde82cbb152de7055126
+[2m2026-04-11T11:37:49.129355Z[0m [33m WARN[0m Node not found in states/ DB: 0193b230bfc66a9b078b58edbdc7984aab9b0ef130bf42d739c886f7030e167b
+[2m2026-04-11T11:37:49.129413Z[0m [33m WARN[0m Node not found in states/ DB: 06c460231aad3ca74be44542dabcad2ce2b2df67c327d5a8207d139c1d00736f
+[2m2026-04-11T11:37:57.329054Z[0m [33m WARN[0m Node not found in states/ DB: 649c5e3aa7c48d2d78c3ea959f600ca3f6690f538d9b697258e4ec63d53a2265
+[2m2026-04-11T11:37:57.329116Z[0m [33m WARN[0m Node not found in states/ DB: 10449c14b815f4e2185086f605c3360957e1200198be694c14b5089b6333bbbd
+[2m2026-04-11T11:38:25.100082Z[0m [33m WARN[0m Node not found in states/ DB: 44b257db2ff895a6c731e45c28e3399a17d3280fbae6ebea2a02c50577f7ed11
+[2m2026-04-11T11:38:40.719888Z[0m [33m WARN[0m Node not found in states/ DB: b941b5e62fc1fc0e7f1cf8ce6856e6ca6cae40bee7a539f039156ff3e0be418a
+[2m2026-04-11T11:38:40.719931Z[0m [33m WARN[0m Node not found in states/ DB: 8727d66f3f9c1a18e133aa56a135a82f696663d66ee9a227514835c32f0fe6f7
+[2m2026-04-11T11:38:40.719940Z[0m [33m WARN[0m Node not found in states/ DB: d1d68a2ecc8947d55778eb0a3b74f869bdfcf17d1d61ba0247993f9b5499b3ac
+[2m2026-04-11T11:38:40.722391Z[0m [33m WARN[0m Node not found in states/ DB: 629f220f30ff66bd377ea29b2e2498c5ae75ecdee41f33ec584e9ee5b2394224
+[2m2026-04-11T11:38:44.589906Z[0m [33m WARN[0m Node not found in states/ DB: 8ff7180f0f532784ea938c8d53247306fb33d4d04add0f0a7e77b651dbe01843
+[2m2026-04-11T11:38:49.397665Z[0m [33m WARN[0m Node not found in states/ DB: 1095aea6eae692fb32b3655cc0e1afc3959f859d57749355e4550b714e017552
+[2m2026-04-11T11:39:24.432153Z[0m [33m WARN[0m Node not found in states/ DB: 6881f62ae2c88d5bcfdcf86b1d76ca5dc11e70097420b089380f9e960d9d933e
+[2m2026-04-11T11:39:28.887820Z[0m [33m WARN[0m Node not found in states/ DB: 20d4723694ee62bccb05beda5d6c1e7eb2588dbde7ec271a2fe03ff8afaf8561
+[2m2026-04-11T11:40:14.936747Z[0m [33m WARN[0m Node not found in states/ DB: c3a20520b9b18a27be4e8baa772b0ee2d2efc8e2d00949fa0227d1e45ba80445
+[2m2026-04-11T11:40:14.936804Z[0m [33m WARN[0m Node not found in states/ DB: 30ea51c3a81aa348bcebe0e7f34d65762002ecb045ad3b88644c4f3756a45fdc
+[2m2026-04-11T11:40:33.189755Z[0m [33m WARN[0m Node not found in states/ DB: 5d83422a70f88e5f129c755bb63a0223a76405eb7d28e37c89a1cefde297b527
+[2m2026-04-11T11:40:33.189790Z[0m [33m WARN[0m Node not found in states/ DB: 1bdf5829e167d4afa8a7858d4e1b6cb4652410ac82a8540224a65b39cc6c1fb2
+[2m2026-04-11T11:40:38.292596Z[0m [33m WARN[0m Node not found in states/ DB: 26480e228d1192c8055c505531a0189c28d55cea23d3bfdeb58e243cdb786028
+[2m2026-04-11T11:40:53.227338Z[0m [33m WARN[0m Node not found in states/ DB: 3993b11284b2710676161277d35dd58c9cdd14481000601e0799e3da9adf1937
+[2m2026-04-11T11:41:13.218968Z[0m [33m WARN[0m Node not found in states/ DB: 1712ea84f240df03e9c75b9644815ad5045f89eb0cde1dbe391e73222178dc79
+[2m2026-04-11T11:41:13.223179Z[0m [33m WARN[0m Node not found in states/ DB: 1f9d3aa8c79bc61a405d00e13e43d19516a63df911a9ef8962f479c9aed9c72e
+[2m2026-04-11T11:41:13.223210Z[0m [33m WARN[0m Node not found in states/ DB: e59683cdc86342dcb604d49cc6dd17226910c47c453a93ea0eb93f957e174b96
+[2m2026-04-11T11:41:47.370046Z[0m [33m WARN[0m Node not found in states/ DB: 84d7ddb67c2f17875e85e40381afaed660a926b742d8db662bef0035ea1a99da
+[2m2026-04-11T11:42:07.124249Z[0m [33m WARN[0m Node not found in states/ DB: 005cd0511ebfe339cccffc314427e9c011966b1d4a7675d97f58e73009c8f65c
+[2m2026-04-11T11:42:07.124292Z[0m [33m WARN[0m Node not found in states/ DB: d84c569427a1368e5b482d6e32d39bee9232411d0cd618e310943cd2bed9f4f4
+[2m2026-04-11T11:42:49.617460Z[0m [33m WARN[0m Node not found in states/ DB: 0a3e3a419bd41717d38f8dc99332fa2e073e5fc3f29c67ab8bf73fb6b5b46796
+[2m2026-04-11T11:42:54.292556Z[0m [33m WARN[0m Node not found in states/ DB: 73abc1ca0dabdb53979bf4d62efb12f70410bdc0f77ed1b9f2d8bc97a41bdc9d
+[2m2026-04-11T11:42:54.292599Z[0m [33m WARN[0m Node not found in states/ DB: f2aceb2198593a39e6b5961f5ca6e2a8c36f6a9209a1ea767938296fd232cb9f
+[2m2026-04-11T11:43:12.253132Z[0m [33m WARN[0m Node not found in states/ DB: c2303f6fde9b4ee18213cfa26c24844c234e965c1b0be2c5a297a7e8b20134b4
+[2m2026-04-11T11:45:15.774403Z[0m [33m WARN[0m Node not found in states/ DB: 6cb1b978536c11c087d92b32b3103819c787d10af12ce47f8fcafa83cd5445e7
+[2m2026-04-11T11:49:10.237876Z[0m [33m WARN[0m Node not found in states/ DB: 48e50ecd6d1aa2689fd349c1f0611e6cc1e9c4c74ec4de9d4637ec7b78617308
+[2m2026-04-11T11:55:48.052611Z[0m [33m WARN[0m Node not found in states/ DB: 05d357df8472a61f9148aca7dcab85c7ecd2cbb83286ac2e9e96ca17b6149568
+[2m2026-04-11T11:55:48.052841Z[0m [33m WARN[0m Node not found in states/ DB: 6072ad060614b8421a78edef215916303a371a6a0859a603320d45e727e81070
+[2m2026-04-11T11:55:48.052851Z[0m [33m WARN[0m Node not found in states/ DB: 5621e3f6b75930d415d95ff9b66002533f94ae441b2c7920fb0820f0a489e111
+[2m2026-04-11T11:56:18.848171Z[0m [33m WARN[0m Node not found in states/ DB: 4db3bafa242f8bf19a14115179b6f9bbb07b08c81fc335d57fe8ec1e9eb5e26f
+[2m2026-04-11T11:56:51.779997Z[0m [33m WARN[0m Node not found in states/ DB: a2478bd692671c6f27488e65e4e64c4b8e939f7526ddc7b4ec746e0ae6c64295
+[2m2026-04-11T12:10:49.537794Z[0m [33m WARN[0m Node not found in states/ DB: 6ae94d4c0195194ff0a895e88ec8952aa6aa41f47eb0bc38eb414d575ffc021b
+[2m2026-04-11T12:12:08.419798Z[0m [33m WARN[0m Node not found in states/ DB: 7f0a336e1de262e89bee46310f13838097dba7faa9417f38d7b1202b372cc38c
+[2m2026-04-11T12:18:27.986515Z[0m [33m WARN[0m Node not found in states/ DB: cb89436c3cf7a8f5ee87ed6a049567f99f107774cb0e86daa0f91f6425cde298
+[2m2026-04-11T12:20:44.044164Z[0m [33m WARN[0m Node not found in states/ DB: f8faf92c9c0d0e8e06694361ea87bfc8b29a8ae8de93044b98470a57636ed0e0
+[2m2026-04-11T12:31:29.135766Z[0m [33m WARN[0m Node not found in states/ DB: 1a755098a2bc0659a063107df62e2ff9b3cdaba34d96b79519f504b996f53820
+[2m2026-04-11T13:08:53.281645Z[0m [33m WARN[0m Node not found in states/ DB: 853a05ba567c3b81d68d328d602fc0544ea1a48d4045cb6c2489e8e3ec695ed3
+[2m2026-04-11T13:08:53.281854Z[0m [33m WARN[0m Node not found in states/ DB: da6fdb5cd3bc1c3ece4e1bb16baa86d207a570bd77f74ab70f458814b6e003d4
+[2m2026-04-11T13:08:53.281865Z[0m [33m WARN[0m Node not found in states/ DB: 94a48c1d8790395876690f19009c1eac6bd81a6439c126e3e85b54f95482b18f
+[2m2026-04-11T13:16:44.116759Z[0m [33m WARN[0m Node not found in states/ DB: d3123f37eb48d62fb15972a4c05252323ec270f94e81fe88052878c46dd37190

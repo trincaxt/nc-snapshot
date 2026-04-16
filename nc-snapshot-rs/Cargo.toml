@@ -1,0 +1,89 @@
+[package]
+name = "nc-snapshot-rs"
+version = "0.1.0"
+edition = "2021"
+default-run = "nc-pruner"
+description = "Native Rust pruner for Nine Chronicles Libplanet TrieStateStore (states/)"
+authors = ["NC Snapshot Team"]
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "nc-pruner"
+path = "src/main.rs"
+
+[dependencies]
+walkdir = "2"
+# RocksDB bindings — match Libplanet's RocksDB version
+# RocksDB 0.22 -> librocksdb-sys 0.16.0+8.10.0 (same major 8.x as Libplanet's 8.5.3)
+# This ensures the pruned DB output is readable by the Nine Chronicles node (RocksDB 8.5.3)
+rocksdb = { version = "0.22", features = ["multi-threaded-cf", "lz4", "snappy"] }
+
+# Cryptography
+sha2 = "0.10"
+
+# Probabilistic data structures (memory-efficient visited set for pruning)
+bloomfilter = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Encoding/display
+hex = "0.4"
+
+# Parallelism
+rayon = "1.10"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging/tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Progress bars
+indicatif = "0.17"
+
+# Serialization (for config/metadata)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Byte manipulation
+byteorder = "1"
+num-bigint = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+criterion = "0.5"
+proptest = "1"
+
+[[bench]]
+name = "bencodex_bench"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# BUILD REQUIREMENTS:
+# - Rust stable (1.75+)
+# - libclang-dev (for rocksdb bindings generation)
+# - C/C++ compiler (gcc/clang)
+#
+# On Ubuntu/Debian:
+#   sudo apt-get install libclang-dev clang build-essential
+#
+# On macOS:
+#   xcode-select --install
+#
+# Build:
+#   cargo build --release
+#
+# Run tests:
+#   cargo test
+#
+# Run:
+#   ./target/release/nc-pruner prune --store-path ~/9c-blockchain
