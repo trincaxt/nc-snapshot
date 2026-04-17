@@ -9,21 +9,18 @@ Fast, production-grade snapshot tool for Nine Chronicles blockchain nodes, built
 
 Replaces the [NineChronicles.Snapshot](https://github.com/planetarium/NineChronicles.Snapshot) C# tool with **~7x faster** performance.
 
-## Recent Changes (2026-04-11)
+## Recent Changes (2026-04-17)
 
 ### Live Snapshot Support (`--live`)
 - **Take snapshots without stopping the node** using RocksDB hard-link checkpoints
 - Hard-links create instant point-in-time copies (no data copy, no downtime)
 - `--live` works with all modes: state, partition, full
-- `--live --prune` uses nc-pruner's built-in checkpoint mechanism
 - Checkpoints are automatically cleaned up after archiving
 
-### Prune Support (`--prune`)
-- **50% smaller state snapshots** by pruning unreachable trie nodes
-- Uses nc-pruner (Selective Streaming Copy) — no tombstones, no compaction
-- Reduces states/ from ~36 GiB to ~19 GiB (~15-25 min)
-- 9c-blockchain/ is NEVER modified (opens ReadOnly, writes to temp dir)
-- Requires nc-pruner binary (included in `nc-snapshot-rs/`)
+### Prune Removed (experimental)
+- `--prune` has been removed from the tool — it was corrupting the node
+- The `nc-snapshot-rs/` pruner source is preserved but not used
+- Snapshot sizes are now full-state (~128 GiB state, ~274 GiB partition)
 
 ### Bridge Update
 - **Complete Metadata Format**: Bridge now generates full BlockHeader JSON (same as C# original)
@@ -37,9 +34,6 @@ Replaces the [NineChronicles.Snapshot](https://github.com/planetarium/NineChroni
 
 # Live state snapshot (node stays running!)
 ./nc-snapshot create --live --mode state --apv "<APV>" -s ~/9c-blockchain --output-dir ~/snapshots/state
-
-# Live state snapshot with prune (smaller, node stays running)
-./nc-snapshot create --live --prune --mode state --apv "<APV>" -s ~/9c-blockchain --output-dir ~/snapshots/state
 
 # Base/partition snapshot (weekly/monthly)
 ./nc-snapshot create --mode partition --apv "<APV>" -s ~/9c-blockchain --output-dir ~/snapshots/base
@@ -56,7 +50,6 @@ Replaces the [NineChronicles.Snapshot](https://github.com/planetarium/NineChroni
 | Metric | NC Snapshot (Rust) | NineChronicles.Snapshot (C#) |
 |--------|-------------------|------------------------------|
 | State snapshot (~127 GiB) | **11 min** | ~7 hours |
-| State + prune (~114 GiB) | **~25 min** | ~3 hours |
 | Compression | zstd multi-threaded | zip single-threaded |
 | Integrity | BLAKE3 checksums | None |
 | Throughput | ~175-679 MB/s | ~5-10 MB/s |
@@ -67,7 +60,6 @@ Replaces the [NineChronicles.Snapshot](https://github.com/planetarium/NineChroni
 - **🔒 Integrity** — BLAKE3 checksums for every file (manifest embedded in archive)
 - **🛡️ Safe** — Detects if node is running via RocksDB lock files
 - **📸 Live** — Take snapshots without stopping the node (`--live`)
-- **✂️ Prune** — 50% smaller state snapshots (`--prune`)
 - **⚡ Atomic** — Writes to temp file, renames on success (no partial outputs)
 - **📊 Progress** — Real-time progress bar with ETA and throughput
 - **📁 Incremental** — Skip unchanged files using mtime+size fingerprint
@@ -89,12 +81,6 @@ With --live (online):
   2. Create hard-link checkpoint of states/ (instant, no data copy)
   3. Archive from checkpoint (consistent point-in-time view)
   4. Clean up checkpoint
-
-With --live --prune (online + smaller):
-  1. Skip node detection
-  2. nc-pruner creates its own checkpoint + pruned copy
-  3. Archive from pruned copy
-  4. Clean up staging dirs
 ```
 
 ### Safety Guarantees
@@ -103,22 +89,6 @@ With --live --prune (online + smaller):
 - Hard-links are instant and don't affect original files
 - If checkpoint fails, falls back to archiving live source (with warning)
 - `--block-before` (default=1) handles tip offset for live snapshots
-
-## How Pruning Works
-
-The `--prune` flag uses nc-pruner's Selective Streaming Copy:
-
-```
-1. nc-pruner opens states/ in ReadOnly mode (never modifies source)
-2. Creates hard-link checkpoint outside 9c-blockchain/
-3. Reads last 3 state roots from chain/
-4. DFS traversal of reachable trie nodes from those roots
-5. Writes only reachable nodes to clean target DB
-6. Creates staging with pruned states + symlinks to original static dirs
-7. Archives from staging, then cleans up
-```
-
-**Result:** states/ goes from ~36 GiB to ~19 GiB (47% reduction)
 
 ## Installation
 
@@ -144,22 +114,14 @@ cargo build --release
 # Binary: ./target/release/nc-snapshot
 ```
 
-### 3. Build nc-pruner (for `--prune` support)
-
-```bash
-cd nc-snapshot-rs
-cargo build --release
-# Binary: ./target/release/nc-pruner
-```
-
 ### Project Structure
 
 ```
 newsnapshot/
 ├── bridge-bin/                          ← published C# bridge (portable, no external deps)
 │   └── NineChronicles.Snapshot.Bridge
-├── nc-snapshot-rs/                      ← nc-pruner for --prune support
-│   └── target/release/nc-pruner
+├── nc-snapshot-rs/                      ← nc-pruner source (preserved, not currently used)
+│   └── ...
 ├── src/
 │   ├── main.rs                          ← CLI entry point
 │   ├── snapshot.rs                      ← archive creation
@@ -181,7 +143,7 @@ Same as `state_latest.zip` from the NC tool. Contains:
 - `states` — full state trie
 - `txbindex`, `txexec`, `chain`, `blockcommit`
 
-**Size:** ~127-130 GiB → ~114 GiB compressed | ~64 GiB with `--prune`
+**Size:** ~127-130 GiB → ~114 GiB compressed
 
 ### `partition` — Base/Partition Snapshot
 Same as `snapshot-XXXXX-XXXXX.zip` from the NC tool. Contains:
@@ -222,19 +184,6 @@ Everything in the store directory. Combines state + partition + small dirs.
   --output-dir ~/snapshots/state
 ```
 → Creates consistent snapshot without stopping node ✅
-
-### Live State Snapshot + Prune (smallest, node stays running)
-
-```bash
-./target/release/nc-snapshot create \
-  --live \
-  --prune \
-  --mode state \
-  --apv "<YOUR_APV_HERE>" \
-  -s ~/9c-blockchain \
-  --output-dir ~/snapshots/state
-```
-→ Creates pruned snapshot (~64 GiB) without stopping node ✅
 
 ### Base Snapshot (weekly/monthly)
 
@@ -318,8 +267,6 @@ Options:
       --apv <APV>             APV string for metadata generation
       --block-before <N>      Block before current tip [default: 1]
       --live                  Take snapshot without stopping node (uses checkpoints)
-      --prune                 Prune states before archiving (~50% smaller)
-      --pruner-path <PATH>    Path to nc-pruner binary
       --force                 Proceed even if node is running
       --json                  JSON structured output
       --dry-run               Scan only, don't create archive
@@ -337,15 +284,13 @@ nc-snapshot verify [OPTIONS] <ARCHIVE>
 | `-o ~/snapshots/base/my-name.tar.zst` | `~/snapshots/base/my-name.tar.zst` (fixed) |
 | neither | `snapshot-20536-20536.tar.zst` in current directory |
 
-### Live + Prune Matrix
+### Live Mode Matrix
 
 | Flags | Behavior |
 |---|---|
 | (none) | Offline snapshot, aborts if node running |
 | `--force` | Offline snapshot, ignores node detection |
 | `--live` | Online snapshot with hard-link checkpoint |
-| `--prune` | Offline snapshot with pruned states |
-| `--live --prune` | Online snapshot with nc-pruner checkpoint + prune |
 
 ## Compression Levels
 
