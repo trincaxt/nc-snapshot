@@ -1,3 +1,0 @@
-# Fix for GCC 15+ compatibility with RocksDB 8.x (missing #include <cstdint>)
-[env]
-CXXFLAGS = "-include cstdint"
