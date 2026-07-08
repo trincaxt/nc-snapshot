@@ -1,0 +1,6 @@
+/home/vrunnx/nc-snapshot/checkpoint-bridge-for-rust/obj/Release/net6.0/linux-x64/CheckpointBridge.csproj.AssemblyReference.cache
+/home/vrunnx/nc-snapshot/checkpoint-bridge-for-rust/obj/Release/net6.0/linux-x64/CheckpointBridge.GeneratedMSBuildEditorConfig.editorconfig
+/home/vrunnx/nc-snapshot/checkpoint-bridge-for-rust/obj/Release/net6.0/linux-x64/CheckpointBridge.AssemblyInfoInputs.cache
+/home/vrunnx/nc-snapshot/checkpoint-bridge-for-rust/obj/Release/net6.0/linux-x64/CheckpointBridge.AssemblyInfo.cs
+/home/vrunnx/nc-snapshot/checkpoint-bridge-for-rust/obj/Release/net6.0/linux-x64/CheckpointBridge.csproj.CoreCompileInputs.cache
+/home/vrunnx/nc-snapshot/checkpoint-bridge-for-rust/obj/Release/net6.0/linux-x64/CheckpointBridge.sourcelink.json

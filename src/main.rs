@@ -3,6 +3,9 @@ mod node_detect;
 mod snapshot;
 mod types;
 mod verify;
+mod gc_filter;
+mod pruner;
+mod exporter;
 
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -11,10 +14,10 @@ use types::{BridgeResult, SnapshotConfig, SnapshotMode};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "nc-snapshot",
-    about = "⚡ Nine Chronicles blockchain snapshot tool",
-    version,
-    long_about = "Fast, production-grade snapshot tool for Nine Chronicles blockchain.\n\
+name = "nc-snapshot",
+about = "⚡ Nine Chronicles blockchain snapshot tool",
+version,
+long_about = "Fast, production-grade snapshot tool for Nine Chronicles blockchain.\n\
 Creates tar.zst archives with BLAKE3 integrity verification.\n\n\
 Modes:\n\
 - state (default)  State snapshot: indexes + state data (~127 GiB)\n\
@@ -62,9 +65,13 @@ enum Commands {
         #[arg(short, long)]
         include: Vec<String>,
 
-        /// Epoch limit for partition mode (skip epochs below this number)
+        /// Epoch limit for partition mode (skip epochs below this number) - ARQUIVA apenas
         #[arg(long)]
         epoch_limit: Option<u64>,
+
+        /// Epoch validation limit - VALIDA apenas epochs >= this number (saves time)
+        #[arg(long)]
+        epoch_validate: Option<u64>,
 
         /// APV for metadata generation
         #[arg(long)]
@@ -78,37 +85,37 @@ enum Commands {
         #[arg(long)]
         force: bool,
 
-        /// Output results as JSON
-        #[arg(long)]
-        json: bool,
+            /// Output results as JSON
+            #[arg(long)]
+            json: bool,
 
-        /// Scan only, don't create archive
-        #[arg(long)]
-        dry_run: bool,
+            /// Scan only, don't create archive
+            #[arg(long)]
+            dry_run: bool,
 
-        /// Skip unchanged files since last snapshot
-        #[arg(long)]
-        incremental: bool,
+            /// Skip unchanged files since last snapshot
+            #[arg(long)]
+            incremental: bool,
 
-        /// Prune states before archiving (reduces state snapshot ~50%).
-        /// Requires nc-pruner binary. The 9c-blockchain/ directory is NEVER modified.
-        #[arg(long)]
-        prune: bool,
+            /// Prune states before archiving (reduces state snapshot ~50%).
+            /// Requires nc-pruner binary. The 9c-blockchain/ directory is NEVER modified.
+            #[arg(long)]
+            prune: bool,
 
-        /// Path to nc-pruner binary (default: looks in PATH and ../nc-snapshot-rs/target/release/)
-        #[arg(long)]
-        pruner_path: Option<PathBuf>,
+            /// Path to nc-pruner binary (default: looks in PATH and ../nc-snapshot-rs/target/release/)
+            #[arg(long)]
+            pruner_path: Option<PathBuf>,
 
-        /// Number of recent state roots to preserve when pruning (default: 3).
-        /// Must be >= --block-before to avoid pruning away the snapshot tip state.
-        #[arg(long, default_value = "3")]
-        prune_depth: usize,
+            /// Number of recent state roots to preserve when pruning (default: 3).
+            /// Must be >= --block-before to avoid pruning away the snapshot tip state.
+            #[arg(long, default_value = "3")]
+            prune_depth: usize,
 
-        /// Take a live snapshot without stopping the node.
-        /// Uses RocksDB hard-link checkpoints for consistency.
-        /// The snapshot may be slightly behind the chain tip (use --block-before to control).
-        #[arg(long)]
-        live: bool,
+            /// Take a live snapshot without stopping the node.
+            /// Uses RocksDB hard-link checkpoints for consistency.
+            /// The snapshot may be slightly behind the chain tip (use --block-before to control).
+            #[arg(long)]
+            live: bool,
     },
 
     /// Verify an existing archive's integrity
@@ -141,157 +148,369 @@ fn fetch_metadata(
         "Apv": apv,
         "OutputDirectory": ".",
         "StorePath": source.to_string_lossy(),
-        "BlockBefore": block_before,
-        "BypassCopyStates": true,
-        "SnapshotType": mode
+                                         "BlockBefore": block_before,
+                                         "BypassCopyStates": true,
+                                         "SnapshotType": mode
     });
 
     let bridge_bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("bridge-bin")
-        .join("NineChronicles.Snapshot.Bridge");
+    .join("bridge-bin")
+    .join("NineChronicles.Snapshot.Bridge");
 
     let output = Command::new(&bridge_bin)
-        .arg(prepare_args.to_string())
-        .output()?;
+    .arg(prepare_args.to_string())
+    .output()?;
 
-    if !output.status.success() {
-        anyhow::bail!(
-            "C# Bridge failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
+    // Bridge sempre escreve o resultado JSON no stdout (mesmo em erro)
     let stdout = String::from_utf8_lossy(&output.stdout);
     let last_line = stdout
-        .lines()
-        .last()
-        .ok_or_else(|| anyhow::anyhow!("Empty bridge output"))?;
+    .lines()
+    .last()
+    .ok_or_else(|| anyhow::anyhow!("Empty bridge output"))?;
     let res: BridgeResult = serde_json::from_str(last_line)?;
+
+    if !output.status.success() || !res.success {
+        let err_msg = res.error.unwrap_or_else(|| "Unknown error".to_string());
+        let stderr_msg = String::from_utf8_lossy(&output.stderr);
+        let details = if stderr_msg.is_empty() { err_msg } else { format!("{} | stderr: {}", err_msg, stderr_msg) };
+        anyhow::bail!("C# Bridge failed: {}", details);
+    }
+
     Ok(res)
 }
 
-/// Find the nc-pruner binary in common locations.
-fn find_pruner_binary(explicit_path: &Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(p) = explicit_path {
-        if p.exists() {
-            return Some(p.clone());
-        }
-    }
 
-    if let Ok(output) = Command::new("which").arg("nc-pruner").output() {
-        if output.status.success() {
-            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path_str.is_empty() {
-                return Some(PathBuf::from(path_str));
-            }
-        }
-    }
 
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let candidates = [
-        manifest_dir.join("../nc-snapshot-rs/target/release/nc-pruner"),
-        manifest_dir.join("../nc-snapshot-rs/target/debug/nc-pruner"),
-        manifest_dir.join("nc-snapshot-rs/target/release/nc-pruner"),
-    ];
-    for candidate in &candidates {
-        if candidate.exists() {
-            return Some(candidate.clone());
-        }
-    }
+/// Create a RocksDB checkpoint using the native Checkpoint API.
+/// Uses rocksdb::checkpoint::Checkpoint for atomic, consistent snapshots.
+/// Works both offline and in live mode (shared LOCK with running node).
+fn create_rocksdb_checkpoint(src_dir: &Path, dst_dir: &Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use rocksdb::checkpoint::Checkpoint;
+    use rocksdb::{BlockBasedOptions, DB, Options};
 
-    None
+    let mut opts = Options::default();
+    opts.create_if_missing(false);
+
+    // Formato 5 para compatibilidade com Libplanet
+    let mut block_opts = BlockBasedOptions::default();
+    block_opts.set_format_version(5);
+    opts.set_block_based_table_factory(&block_opts);
+
+    let db = DB::open_for_read_only(&opts, src_dir, false)
+        .with_context(|| format!("Failed to open DB for checkpoint: {}", src_dir.display()))?;
+
+    let checkpoint = Checkpoint::new(&db)
+        .with_context(|| "Failed to create Checkpoint object")?;
+
+    checkpoint.create_checkpoint(dst_dir)
+        .with_context(|| format!("Failed to create checkpoint at: {}", dst_dir.display()))?;
+
+    // DB é fechado automaticamente no Drop
+    Ok(())
 }
 
-/// Check whether a file name is a RocksDB metadata file that must be copied last.
-fn is_rocksdb_metadata(name: &str) -> bool {
-    name.starts_with("MANIFEST-") || name == "CURRENT" || name.starts_with("OPTIONS-")
+/// Create a validated checkpoint using the checkpoint-bridge-for-rust.
+fn create_validated_checkpoint_via_bridge(
+    src_dir: &Path,
+    dst_dir: &Path,
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct CheckpointResult {
+        #[serde(rename = "Success")]
+        success: bool,
+        #[serde(rename = "ValidatedPath")]
+        validated_path: Option<String>,
+        #[serde(rename = "Error")]
+        error: Option<String>,
+    }
+
+    let bridge_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("bridge-bin")
+    .join("checkpoint")
+    .join("CheckpointBridge");
+
+    if !bridge_path.exists() {
+        anyhow::bail!(
+            "CheckpointBridge not found: {}\n\
+This is the minimal bridge that creates validated checkpoints.\n\
+Compile from: checkpoint-bridge-for-rust/",
+bridge_path.display()
+        );
+    }
+
+    eprintln!("   Calling CheckpointBridge (validates with Libplanet)...");
+    eprintln!("   Source: {}", src_dir.display());
+    eprintln!("   Dest: {}", dst_dir.display());
+
+    let output = Command::new(&bridge_path)
+    .arg(src_dir.to_string_lossy().as_ref())
+    .arg(dst_dir.to_string_lossy().as_ref())
+    .output()
+    .with_context(|| format!("Failed to execute CheckpointBridge: {}", bridge_path.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "CheckpointBridge failed with exit code: {}\nStdout: {}\nStderr: {}",
+            output.status,
+            stdout,
+            stderr
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let result: CheckpointResult = serde_json::from_str(&stdout)
+    .with_context(|| format!("Failed to parse bridge output: {}", stdout))?;
+
+    if result.success {
+        let validated_path = result.validated_path
+        .ok_or_else(|| anyhow::anyhow!("Bridge returned success but no path"))?;
+        Ok(PathBuf::from(validated_path))
+    } else {
+        let error = result.error.unwrap_or_else(|| "Unknown error".to_string());
+        anyhow::bail!("CheckpointBridge failed: {}", error);
+    }
 }
 
-/// Create a hard-link checkpoint of a directory for consistent live snapshots.
-/// Hard-links are instant (no data copy) and create a point-in-time view.
-/// The source directory is NEVER modified.
-///
-/// For live checkpoints we do two passes:
-///   1. Hard-link data files (.sst, .log, etc.)
-///   2. Hard-link metadata files (MANIFEST-*, CURRENT, OPTIONS-*) last
-/// This avoids the race where MANIFEST references a newly-created .sst that
-/// our first WalkDir pass missed.
-fn create_hardlink_checkpoint(src_dir: &Path, dst_dir: &Path) -> anyhow::Result<()> {
+/// Create validated checkpoints for multiple epoch directories in batch mode.
+fn create_validated_checkpoint_batch(
+    src_root: &Path,
+    dst_root: &Path,
+    epoch_validate: u64,
+    _json: bool,
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct CheckpointResult {
+        #[serde(rename = "Success")]
+        success: bool,
+        #[serde(rename = "ValidatedPath")]
+        validated_path: Option<String>,
+        #[serde(rename = "Error")]
+        error: Option<String>,
+    }
+
+    let bridge_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("bridge-bin")
+    .join("checkpoint")
+    .join("CheckpointBridge");
+
+    if !bridge_path.exists() {
+        anyhow::bail!("CheckpointBridge not found: {}", bridge_path.display());
+    }
+
+    eprintln!("   Calling CheckpointBridge in batch mode...");
+    eprintln!("   Source: {}", src_root.display());
+    eprintln!("   Dest: {}", dst_root.display());
+    eprintln!("   Epoch validate: {}", epoch_validate);
+
+    let child = Command::new(&bridge_path)
+    .arg("--batch-epochs")
+    .arg(epoch_validate.to_string())
+    .arg(src_root.to_string_lossy().as_ref())
+    .arg(dst_root.to_string_lossy().as_ref())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::inherit())
+    .spawn()
+    .with_context(|| format!("Failed to execute CheckpointBridge: {}", bridge_path.display()))?;
+
+    let output = child.wait_with_output()
+    .with_context(|| "Failed to wait for CheckpointBridge")?;
+
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "CheckpointBridge batch failed with exit code: {}\nStdout: {}",
+            output.status,
+            stdout
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let result: CheckpointResult = serde_json::from_str(&stdout)
+    .with_context(|| format!("Failed to parse bridge output: {}", stdout))?;
+
+    if result.success {
+        let validated_path = result.validated_path
+        .ok_or_else(|| anyhow::anyhow!("Bridge returned success but no path"))?;
+        Ok(PathBuf::from(validated_path))
+    } else {
+        let error = result.error.unwrap_or_else(|| "Unknown error".to_string());
+        anyhow::bail!("CheckpointBridge failed: {}", error);
+    }
+}
+
+/// State dirs needed for state snapshot mode.
+const STATE_LINK_DIRS: &[&str] = &[
+    "block/blockindex",
+"tx/txindex",
+"txbindex",
+"chain",
+"blockcommit",
+"txexec",
+];
+
+/// Chama CheckpointBridge --get-state-root no checkpoint criado.
+fn get_state_root_from_checkpoint(
+    bridge_path: &Path,
+    checkpoint_base: &Path,
+    block_before: i32,
+    json: bool,
+) -> anyhow::Result<String> {
     use anyhow::Context;
 
-    std::fs::create_dir_all(dst_dir)
-        .with_context(|| format!("Creating checkpoint dir: {}", dst_dir.display()))?;
+    let store_path = checkpoint_base;
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // PASS 1: directories + data files
-    // ═══════════════════════════════════════════════════════════════════════
-    for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
-        let entry = entry.map_err(|e| anyhow::anyhow!("WalkDir error: {}", e))?;
-        let rel = entry.path().strip_prefix(src_dir).unwrap_or(entry.path());
-        let dst_path = dst_dir.join(rel);
-
-        if entry.file_type().is_dir() {
-            std::fs::create_dir_all(&dst_path).with_context(|| {
-                format!("Creating checkpoint subdirectory: {}", dst_path.display())
-            })?;
-        } else if entry.file_type().is_file() {
-            let file_name = entry.file_name().to_string_lossy();
-            if is_rocksdb_metadata(&file_name) {
-                continue; // Copy metadata in pass 2
-            }
-            if let Some(parent) = dst_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::hard_link(entry.path(), &dst_path).with_context(|| {
-                format!(
-                    "Hard-linking {} -> {}",
-                    entry.path().display(),
-                    dst_path.display()
-                )
-            })?;
-        }
-        // Skip symlinks
+    if !json {
+        eprintln!("   Getting state root from checkpoint...");
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // PASS 2: metadata files (MANIFEST, CURRENT, OPTIONS)
-    // ═══════════════════════════════════════════════════════════════════════
-    for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
-        let entry = entry.map_err(|e| anyhow::anyhow!("WalkDir error: {}", e))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let file_name = entry.file_name().to_string_lossy();
-        if !is_rocksdb_metadata(&file_name) {
-            continue;
-        }
-        let rel = entry.path().strip_prefix(src_dir).unwrap_or(entry.path());
-        let dst_path = dst_dir.join(rel);
-        if let Some(parent) = dst_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::hard_link(entry.path(), &dst_path).with_context(|| {
-            format!(
-                "Hard-linking metadata {} -> {}",
-                entry.path().display(),
-                dst_path.display()
-            )
-        })?;
+    let output = std::process::Command::new(bridge_path)
+    .arg("--get-state-root")
+    .arg(store_path.as_os_str())
+    .arg("--block-before")
+    .arg(block_before.to_string())
+    .output()
+    .context("Failed to run CheckpointBridge --get-state-root")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: serde_json::Value = serde_json::from_str(stdout.trim())
+    .context("Invalid JSON from --get-state-root")?;
+
+    if !result["Success"].as_bool().unwrap_or(false) {
+        anyhow::bail!("{}", result["Error"].as_str().unwrap_or("unknown error"));
+    }
+
+    let srh = result["StateRootHash"]
+    .as_str()
+    .ok_or_else(|| anyhow::anyhow!("Missing StateRootHash in response"))?
+    .to_string();
+
+    if !json {
+        eprintln!("   StateRoot: {}...", &srh[..16]);
+        eprintln!("   Block #{}",
+                  result["BlockIndex"].as_i64().unwrap_or(-1));
+    }
+    Ok(srh)
+}
+
+/// Chama CheckpointBridge --gc-pipeline e parseia o resultado.
+fn run_gc_pipeline(
+    bridge_path: &Path,
+    source_states: &Path,
+    dest_states: &Path,
+    root_hash_hex: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use std::process::Stdio;
+
+    let checkpoint_dir = source_states.parent().unwrap_or(Path::new("."));
+    let export_file = checkpoint_dir.join("states_export.bin");
+    let live_keys_file = checkpoint_dir.join("live_keys.bin");
+
+    if !json {
+        eprintln!("   Source: {}", source_states.display());
+        eprintln!("   Dest  : {}", dest_states.display());
+        eprintln!("   Root  : {}...", &root_hash_hex[..16]);
+        eprintln!("   ⏳ Running GC Pipeline (Export Rust + BFS Rust + Prune Rust + Validate C#)...");
+        eprintln!("   🚀 TUDO EM RUST MENOS VALIDAÇÃO!");
+        eprintln!();
+    }
+
+    // ── Phase 1: Export (RUST) ──────────────────────────────────────
+    if !json {
+        eprintln!("📤 Phase 1: Exporting states/ (Rust 🦀)...");
+    }
+
+    let export_result = exporter::export_states(source_states, &export_file)?;
+
+    if !json {
+        eprintln!("   ✅ Exported {:.0} entries in {:.1}s",
+                  export_result.total_entries, export_result.elapsed_secs);
+    }
+
+    // ── Phase 2: BFS (RUST) ──────────────────────────────────────
+    if !json {
+        eprintln!("🌳 Phase 2: BFS (Rust 🦀 - SCAN SEQUENCIAL, ~500 MB RAM)...");
+    }
+
+    let root_bytes = hex_to_hash32(root_hash_hex)?;
+    let roots = vec![root_bytes];
+
+    gc_filter::run_gc_filter(
+        &export_file,
+        roots,
+        &live_keys_file,
+    )?;
+
+    // ── Phase 3: Prune (RUST) ──────────────────────────────────────
+    if !json {
+        eprintln!("🗑️ Phase 3: Prune (Rust 🦀 - RÁPIDO!)...");
+    }
+
+    // Executar prune em Rust (passa o arquivo de live keys)
+    let result = pruner::prune_states(
+        source_states,
+        dest_states,
+        &live_keys_file,  // ← PASSA O ARQUIVO!
+        json,
+    )?;
+
+    if !json {
+        eprintln!("   ✅ Prune: {} kept, {} deleted",
+                  result.nodes_copied, result.nodes_deleted);
+    }
+
+    // ── Phase 4: Validate (C#) ──────────────────────────────────────
+    if !json {
+        eprintln!("🔍 Phase 4: Validating pruned states/ (C#)...");
+    }
+
+    let validate_output = std::process::Command::new(bridge_path)
+    .arg("--gc-validate")
+    .arg(dest_states.as_os_str())
+    .stderr(Stdio::inherit())
+    .output()
+    .context("Failed to run CheckpointBridge --gc-validate")?;
+
+    if !validate_output.status.success() {
+        anyhow::bail!("Validation failed");
+    }
+
+    // ── Limpar arquivos temporários ─────────────────────────────
+    let _ = std::fs::remove_file(&export_file);
+    let _ = std::fs::remove_file(&live_keys_file);
+
+    if !json {
+        eprintln!("✅ GC Pipeline complete! (Prune em Rust 🦀)");
+        eprintln!("   📊 Phase 1 (Export): Rust 🦀");
+        eprintln!("   📊 Phase 2 (BFS):    Rust 🦀");
+        eprintln!("   📊 Phase 3 (Prune):  Rust 🦀");
+        eprintln!("   📊 Phase 4 (Validate): C# 9C");
     }
 
     Ok(())
 }
 
-/// State dirs needed for state snapshot mode.
-/// These are the directories (besides states/) that a state snapshot includes.
-const STATE_LINK_DIRS: &[&str] = &[
-    "block",      // contains block/blockindex
-    "tx",         // contains tx/txindex
-    "txbindex",
-    "chain",
-    "blockcommit",
-    "txexec",
-];
+/// Converte hex string para [u8; 32]
+fn hex_to_hash32(hex: &str) -> anyhow::Result<[u8; 32]> {
+    let mut bytes = [0u8; 32];
+    if hex.len() != 64 {
+        anyhow::bail!("Invalid hex length: expected 64, got {}", hex.len());
+    }
+    for i in 0..32 {
+        bytes[i] = u8::from_str_radix(&hex[i*2..i*2+2], 16)?;
+    }
+    Ok(bytes)
+}
 
 fn main() {
     let cli = Cli::parse();
@@ -307,16 +526,17 @@ fn main() {
             exclude,
             include,
             mut epoch_limit,
+            epoch_validate,
             apv,
             block_before,
             force,
-            json,
-            dry_run,
-            incremental,
-            prune,
-            pruner_path,
-            prune_depth,
-            live,
+                json,
+                dry_run,
+                incremental,
+                prune,
+                pruner_path,
+                prune_depth,
+                live,
         } => {
             let source_path = expand_tilde(&source);
             let threads = if threads == 0 {
@@ -326,15 +546,14 @@ fn main() {
             };
             let mode_enum: SnapshotMode = mode.parse().unwrap_or(SnapshotMode::State);
 
+            // Pega o valor da flag epoch_validate
+            let validate_epoch = epoch_validate.unwrap_or(0);
+
+            // ── OFFLINE: fetch_metadata ANTES do checkpoint (source sem LOCK) ──
+            // ── LIVE: fetch_metadata DEPOIS do checkpoint (no checkpoint, sem LOCK) ──
             let mut bridge_res = None;
-            if let Some(ref apv_val) = apv {
-                if live {
-                    // In live mode, the C# bridge cannot open the RocksDB (lock held by node).
-                    // We skip the bridge entirely and read metadata from Rust side instead.
-                    if !json {
-                        eprintln!("🟢 Live mode: skipping bridge (reading metadata via Rust)");
-                    }
-                } else {
+            if !live {
+                if let Some(ref apv_val) = apv {
                     if !json {
                         eprintln!("🚀 Fetching blockchain metadata...");
                     }
@@ -356,7 +575,8 @@ fn main() {
                 }
             }
 
-            let final_output = if let Some(p) = output {
+            // Output path inicial (sem bridge para live, com bridge para offline)
+            let mut final_output = if let Some(p) = output {
                 p
             } else {
                 let auto_name = if let Some(ref res) = bridge_res {
@@ -401,6 +621,9 @@ fn main() {
                 if let Some(el) = epoch_limit {
                     eprintln!("  Epoch≥  : {}", el);
                 }
+                if validate_epoch > 0 {
+                    eprintln!("  Validate≥: {}", validate_epoch);
+                }
                 eprintln!();
             }
 
@@ -417,218 +640,413 @@ fn main() {
                 }
             }
 
-            // ══════════════════════════════════════════════════════════
-            // PRUNE STEP (state mode only)
-            //
-            // CRITICAL: 9c-blockchain/ is NEVER modified.
-            // nc-pruner opens states/ ReadOnly, writes pruned copy to temp dir.
-            // We create a STAGING directory with symlinks to original + pruned.
-            // Archive is created from staging. Staging is deleted after.
-            // ══════════════════════════════════════════════════════════
+
+            // LIVE CHECKPOINT
             let mut staging_dir: Option<PathBuf> = None;
-            let mut prune_work_dir: Option<PathBuf> = None;
-
-            if prune && mode_enum == SnapshotMode::State {
-                if live {
-                    // In live mode, prune is NOT safe — the node's compaction can
-                    // delete .sst files during checkpoint creation, causing missing
-                    // file errors. The hard-link checkpoint is not atomic.
-                    // Skip prune in live mode; archive live states as-is.
-                    if !json {
-                        eprintln!("⚠️  --prune skipped in --live mode (not safe with running node)");
-                        eprintln!("   Archive will include full unpruned states.");
-                        eprintln!("   For pruned snapshots, stop the node first.");
-                    }
-                } else {
-                    if !json {
-                        eprintln!("🔧 Pruning states before archiving...");
-                    }
-
-                    let pruner_bin = find_pruner_binary(&pruner_path);
-                    match pruner_bin {
-                        Some(ref bin) => {
-                            if !json {
-                                eprintln!("   Pruner: {}", bin.display());
-                            }
-                            let output_parent = final_output.parent().unwrap_or(Path::new("."));
-                            let work_dir = output_parent.join(".nc-snapshot-prune-work");
-                            let _ = std::fs::create_dir_all(&work_dir);
-                            let pruned_states = work_dir.join("states_pruned");
-
-                            let mut cmd = Command::new(bin);
-                            cmd.arg("prune")
-                                .arg("--store-path").arg(&source_path)
-                                .arg("--target-path").arg(&pruned_states)
-                                .arg("--depth").arg(prune_depth.to_string());
-
-                            match cmd.output() {
-                                Ok(out) => {
-                                    let stderr = String::from_utf8_lossy(&out.stderr);
-                                    if out.status.success() && pruned_states.exists() {
-                                        let staging = work_dir.join("staging");
-                                        let _ = std::fs::remove_dir_all(&staging);
-                                        std::fs::create_dir_all(&staging).expect("Failed staging");
-
-                                        let mut staging_ok = true;
-                                        if let Err(e) = create_hardlink_checkpoint(&pruned_states, &staging.join("states")) {
-                                            eprintln!("⚠️ Failed to hard-link pruned states into staging: {}", e);
-                                            staging_ok = false;
-                                        }
-
-                                        if staging_ok {
-                                            for dir in STATE_LINK_DIRS {
-                                                let src = source_path.join(dir);
-                                                if src.exists() {
-                                                    if let Err(e) = create_hardlink_checkpoint(&src, &staging.join(dir)) {
-                                                        eprintln!("⚠️ Failed to hard-link {} into staging: {}", dir, e);
-                                                        staging_ok = false;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if staging_ok {
-                                            staging_dir = Some(staging.clone());
-                                            prune_work_dir = Some(work_dir);
-                                            if !json {
-                                                eprintln!("✅ Prune complete: {}", staging.display());
-                                            }
-                                        } else {
-                                            let _ = std::fs::remove_dir_all(&work_dir);
-                                        }
-                                    } else {
-                                        eprintln!("⚠️ nc-pruner failed: {}", stderr);
-                                        let _ = std::fs::remove_dir_all(&work_dir);
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("⚠️ Failed to run nc-pruner: {}", e);
-                                    let _ = std::fs::remove_dir_all(&work_dir);
-                                }
-                            }
-                        }
-                        None => {
-                            eprintln!("⚠️ nc-pruner not found. Use --pruner-path.");
-                        }
-                    }
-                } // end else (not live)
-            } // end if prune
-
-            // ══════════════════════════════════════════════════════════
-            // LIVE CHECKPOINT (when --live without --prune)
-            //
-            // Create hard-link checkpoint of states/ (and block/ tx/ for partition)
-            // to get a consistent point-in-time view while the node is running.
-            // Hard-links are instant (no data copy) and don't affect the original files.
-            // When --live WITH --prune, nc-pruner already creates its own checkpoint.
-            // ══════════════════════════════════════════════════════════
             let mut live_checkpoint_dir: Option<PathBuf> = None;
 
             if live && staging_dir.is_none() {
-                if !json {
-                    eprintln!("📸 Creating live checkpoint (hard-links)...");
-                }
-
                 let output_parent = final_output.parent().unwrap_or(Path::new("."));
                 let checkpoint_base = output_parent.join(".nc-snapshot-live-checkpoint");
-                let _ = std::fs::remove_dir_all(&checkpoint_base);
-                std::fs::create_dir_all(&checkpoint_base)
-                    .expect("Failed to create live checkpoint directory");
 
-                // Determine which dirs need hard-link checkpoints
-                // states/ always needs a checkpoint for consistency
-                // block/ and tx/ need checkpoints in partition mode (they're actively written)
-                let dirs_to_checkpoint: Vec<&str> = match mode_enum {
-                    SnapshotMode::State => vec!["states"],
-                    SnapshotMode::Partition => vec!["block", "tx"],
-                    SnapshotMode::Full => vec!["states", "block", "tx"],
-                };
+                let _ = std::fs::remove_dir_all(&checkpoint_base);
+                let _ = std::fs::create_dir_all(&checkpoint_base);
+
+                let bridge_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("bridge-bin")
+                .join("checkpoint")
+                .join("CheckpointBridge");
+
+                if !bridge_path.exists() {
+                    eprintln!("❌ CheckpointBridge not found: {}", bridge_path.display());
+                    process::exit(1);
+                }
+
+                if !json {
+                    eprintln!("📸 Creating validated live checkpoint via CheckpointBridge...");
+                    eprintln!("   This validates each DB with Libplanet");
+                    eprintln!("   Expected time: ~5-10 minutes");
+                    eprintln!("   ⚠️  Hard-links DON'T work - they cause format_version 7 errors!");
+                }
 
                 let mut checkpoint_ok = true;
-                for dir_name in &dirs_to_checkpoint {
-                    let src_dir = source_path.join(dir_name);
-                    if !src_dir.exists() {
+
+                match mode_enum {
+                    SnapshotMode::State => {
                         if !json {
-                            eprintln!("   ⚠️ Skipping {} (not found)", dir_name);
+                            eprintln!("   State mode: validating state DBs + indexes");
+                            eprintln!("   This may take 10-15 minutes");
                         }
-                        continue;
+
+                        // ── MESMOS DBs QUE O FULL (menos blockpercept, txpercept, etc) ──
+                        let state_dbs = [
+                            ("states", "states"),
+                            ("chain", "chain"),
+                            ("blockcommit", "blockcommit"),
+                            ("txexec", "txexec"),
+                            ("txbindex", "txbindex"),
+                            ("block/blockindex", "block/blockindex"),
+                            ("tx/txindex", "tx/txindex"),
+                            // ⚠️ NÃO INCLUIR blockpercept, txpercept, nextstateroothash, evidencec, evidencep
+                        ];
+
+                        for (rel_path, display_name) in &state_dbs {
+                            let src = source_path.join(rel_path);
+                            if src.exists() {
+                                let dst = checkpoint_base.join(rel_path);
+                                if !json {
+                                    eprintln!("   Creating checkpoint for {}...", display_name);
+                                }
+                                match create_validated_checkpoint_via_bridge(&src, &dst) {
+                                    Ok(_) => {
+                                        if !json {
+                                            eprintln!("   ✓ {} validated", display_name);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to checkpoint {}: {}", display_name, e);
+                                        checkpoint_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // ⚠️ NÃO processa block/ epochs ou tx/ epochs (só no partition/full)
                     }
 
-                    let dst_dir = checkpoint_base.join(dir_name);
-                    if let Err(e) = create_hardlink_checkpoint(&src_dir, &dst_dir) {
-                        eprintln!("⚠️ Failed to checkpoint {}: {}", dir_name, e);
-                        checkpoint_ok = false;
-                        break;
+                    SnapshotMode::Partition => {
+                        // For partition mode: block/ and tx/ contain THOUSANDS of epoch subdirs
+                        // Each epoch is a separate RocksDB that must be validated individually
+                        // This matches the C# implementation that processes each epoch
+
+                        if !json {
+                            eprintln!("   Partition mode: validating states + all DBs + epochs >= {}", validate_epoch);
+                            eprintln!("   This may take 20-30 minutes");
+                        }
+
+                        // Primeiro os DBs Ãºnicos (como Full mode) — necessÃ¡rios para
+                        // o bridge (chain/, states/) e para o state archive
+                        let single_dbs = [
+                            ("states", "states"),
+                            ("chain", "chain"),
+                            ("blockcommit", "blockcommit"),
+                            ("txexec", "txexec"),
+                            ("txbindex", "txbindex"),
+                            ("block/blockindex", "block/blockindex"),
+                            ("tx/txindex", "tx/txindex"),
+                            ("blockpercept", "blockpercept"),
+                            ("txpercept", "txpercept"),
+                            ("nextstateroothash", "nextstateroothash"),
+                            ("evidencec", "evidencec"),
+                            ("evidencep", "evidencep"),
+                            ("stagedtx", "stagedtx"),
+                        ];
+
+                        for (rel_path, display_name) in &single_dbs {
+                            let src = source_path.join(rel_path);
+                            if src.exists() {
+                                let dst = checkpoint_base.join(rel_path);
+                                if !json {
+                                    eprintln!("   Creating checkpoint for {}/...", display_name);
+                                }
+                                match create_validated_checkpoint_via_bridge(&src, &dst) {
+                                    Ok(_) => {
+                                        if !json {
+                                            eprintln!("   ✓ {} validated", display_name);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to checkpoint {}: {}", display_name, e);
+                                        checkpoint_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Agora as epochs (block/ + tx/) — jÃ¡ incluÃ­mos block/blockindex e tx/txindex no single_dbs acima
+                        if checkpoint_ok {
+                            let block_root = source_path.join("block");
+                            if block_root.exists() {
+                                let block_dst_root = checkpoint_base.join("block");
+                                std::fs::create_dir_all(&block_dst_root).ok();
+
+                                if !json {
+                                    eprintln!("   📦 Processing block epochs (validating >= {})...", validate_epoch);
+                                }
+
+                                match create_validated_checkpoint_batch(
+                                    &block_root,
+                                    &block_dst_root,
+                                    validate_epoch,
+                                    json,
+                                ) {
+                                    Ok(_) => {
+                                        if !json {
+                                            eprintln!("   ✅ block/ epochs validated");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to checkpoint block/ epochs: {}", e);
+                                        checkpoint_ok = false;
+                                    }
+                                }
+                            }
+                        }
+
+                        if checkpoint_ok {
+                            let tx_root = source_path.join("tx");
+                            if tx_root.exists() {
+                                let tx_dst_root = checkpoint_base.join("tx");
+                                std::fs::create_dir_all(&tx_dst_root).ok();
+
+                                if !json {
+                                    eprintln!("   📦 Processing tx epochs (validating >= {})...", validate_epoch);
+                                }
+
+                                match create_validated_checkpoint_batch(
+                                    &tx_root,
+                                    &tx_dst_root,
+                                    validate_epoch,
+                                    json,
+                                ) {
+                                    Ok(_) => {
+                                        if !json {
+                                            eprintln!("   ✅ tx/ epochs validated");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to checkpoint tx/ epochs: {}", e);
+                                        checkpoint_ok = false;
+                                    }
+                                }
+                            }
+                        }
                     }
-                    if !json {
-                        eprintln!("   ✓ Checkpointed {}/", dir_name);
+
+                    SnapshotMode::Full => {
+                        if !json {
+                            eprintln!("   Full mode: validating states + all DBs + epochs >= {}", validate_epoch);
+                            eprintln!("   This may take 20-30 minutes");
+                        }
+
+                        let single_dbs = [
+                            ("states", "states"),
+                            ("chain", "chain"),
+                            ("blockcommit", "blockcommit"),
+                            ("txexec", "txexec"),
+                            ("txbindex", "txbindex"),
+                            ("block/blockindex", "block/blockindex"),
+                            ("tx/txindex", "tx/txindex"),
+                            ("blockpercept", "blockpercept"),
+                            ("txpercept", "txpercept"),
+                            ("nextstateroothash", "nextstateroothash"),
+                            ("stagedtx", "stagedtx"),
+                            ("evidencec", "evidencec"),
+                            ("evidencep", "evidencep"),
+                        ];
+
+                        for (rel_path, display_name) in &single_dbs {
+                            let src = source_path.join(rel_path);
+                            if src.exists() {
+                                let dst = checkpoint_base.join(rel_path);
+                                if !json {
+                                    eprintln!("   Creating checkpoint for {}/...", display_name);
+                                }
+                                match create_validated_checkpoint_via_bridge(&src, &dst) {
+                                    Ok(_) => {
+                                        if !json {
+                                            eprintln!("   ✓ {} validated", display_name);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to checkpoint {}: {}", display_name, e);
+                                        checkpoint_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if checkpoint_ok {
+                            let block_root = source_path.join("block");
+                            if block_root.exists() {
+                                let block_dst_root = checkpoint_base.join("block");
+                                std::fs::create_dir_all(&block_dst_root).ok();
+
+                                if !json {
+                                    eprintln!("   📦 Processing block epochs (validating >= {})...", validate_epoch);
+                                }
+
+                                match create_validated_checkpoint_batch(
+                                    &block_root,
+                                    &block_dst_root,
+                                    validate_epoch,
+                                    json,
+                                ) {
+                                    Ok(_) => {
+                                        if !json {
+                                            eprintln!("   ✅ block/ epochs validated");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to checkpoint block/ epochs: {}", e);
+                                        checkpoint_ok = false;
+                                    }
+                                }
+                            }
+                        }
+
+                        if checkpoint_ok {
+                            let tx_root = source_path.join("tx");
+                            if tx_root.exists() {
+                                let tx_dst_root = checkpoint_base.join("tx");
+                                std::fs::create_dir_all(&tx_dst_root).ok();
+
+                                if !json {
+                                    eprintln!("   📦 Processing tx epochs (validating >= {})...", validate_epoch);
+                                }
+
+                                match create_validated_checkpoint_batch(
+                                    &tx_root,
+                                    &tx_dst_root,
+                                    validate_epoch,
+                                    json,
+                                ) {
+                                    Ok(_) => {
+                                        if !json {
+                                            eprintln!("   ✅ tx/ epochs validated");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to checkpoint tx/ epochs: {}", e);
+                                        checkpoint_ok = false;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
                 if checkpoint_ok {
-                    // Create staging dir that uses hard-links for ALL dirs.
-                    // Symlinks are NOT used because WalkDir does not follow them,
-                    // which would result in empty / broken archives.
-                    let staging = checkpoint_base.join("staging");
-                    std::fs::create_dir_all(&staging).expect("Failed to create staging dir");
-
-                    // Hard-link checkpointed dirs into staging
-                    let mut staging_ok = true;
-                    for dir_name in &dirs_to_checkpoint {
-                        let ckpt = checkpoint_base.join(dir_name);
-                        if ckpt.exists() {
-                            if let Err(e) = create_hardlink_checkpoint(&ckpt, &staging.join(dir_name)) {
-                                eprintln!("⚠️ Failed to hard-link checkpoint {} into staging: {}", dir_name, e);
-                                staging_ok = false;
-                                break;
+                    // ── LIVE: fetch_metadata DEPOIS do checkpoint (no checkpoint, sem LOCK!) ──
+                    if let Some(ref apv_val) = apv {
+                        if bridge_res.is_none() {
+                            if !json {
+                                eprintln!("🟢 Fetching metadata from checkpoint (no LOCK conflicts)...");
                             }
-                        }
-                    }
-
-                    // Hard-link static dirs from original source
-                    if staging_ok && (mode_enum == SnapshotMode::State || mode_enum == SnapshotMode::Full) {
-                        for dir in STATE_LINK_DIRS {
-                            if dirs_to_checkpoint.contains(dir) {
-                                continue; // Already checkpointed
-                            }
-                            let src = source_path.join(dir);
-                            if src.exists() {
-                                if let Err(e) = create_hardlink_checkpoint(&src, &staging.join(dir)) {
-                                    eprintln!("⚠️ Failed to hard-link {} into staging: {}", dir, e);
-                                    staging_ok = false;
-                                    break;
+                            match fetch_metadata(&checkpoint_base, apv_val, block_before, &mode) {
+                                Ok(res) => {
+                                    if !res.success {
+                                        eprintln!("❌ Bridge error: {:?}", res.error);
+                                    } else {
+                                        if mode_enum == SnapshotMode::Partition && epoch_limit.is_none() {
+                                            epoch_limit = Some(res.current_metadata_block_epoch as u64);
+                                        }
+                                        // Atualiza final_output com o nome correto do bridge
+                                        if mode_enum == SnapshotMode::Partition {
+                                            let parent = final_output.parent().unwrap_or(Path::new(".")).to_path_buf();
+                                            final_output = parent.join(format!("{}.tar.zst", res.partition_base_filename));
+                                        } else {
+                                            let parent = final_output.parent().unwrap_or(Path::new(".")).to_path_buf();
+                                            final_output = parent.join("state_latest.tar.zst");
+                                        }
+                                        bridge_res = Some(res);
+                                        if !json {
+                                            eprintln!("   ✅ Metadata fetched, output: {}", final_output.display());
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("⚠️ Failed to fetch metadata from checkpoint: {}", e);
                                 }
                             }
                         }
                     }
 
-                    if staging_ok {
-                        staging_dir = Some(staging.clone());
-                        live_checkpoint_dir = Some(checkpoint_base.clone());
-
+                    if prune && (mode_enum == SnapshotMode::State || mode_enum == SnapshotMode::Full || mode_enum == SnapshotMode::Partition) {
                         if !json {
-                            eprintln!("✅ Live checkpoint created");
-                            eprintln!("   Checkpoint: {}", checkpoint_base.display());
+                            eprintln!("🧹 Running GC Pipeline on checkpoint states/...");
                         }
-                    } else {
-                        eprintln!("⚠️ Live checkpoint staging failed, archiving from live source (may be inconsistent)");
-                        let _ = std::fs::remove_dir_all(&checkpoint_base);
+
+                        let state_root_hex = match get_state_root_from_checkpoint(
+                            &bridge_path,
+                            &checkpoint_base,
+                            block_before,
+                            json,
+                        ) {
+                            Ok(srh) => srh,
+                            Err(e) => {
+                                eprintln!("⚠  Could not read state root: {} — skipping prune", e);
+                                String::new()
+                            }
+                        };
+
+                        if !state_root_hex.is_empty() {
+                            let states_src = checkpoint_base.join("states");
+                            let states_gc = checkpoint_base.join("states_gc");
+
+                            match run_gc_pipeline(
+                                &bridge_path,
+                                &states_src,
+                                &states_gc,
+                                &state_root_hex,
+                                json,
+                            ) {
+                                Ok(_) => {
+                                    if let Err(e) = std::fs::remove_dir_all(&states_src) {
+                                        eprintln!("⚠  Failed to remove old states/: {} — keeping original", e);
+                                    } else if let Err(e) = std::fs::rename(&states_gc, &states_src) {
+                                        eprintln!("⚠  Failed to swap states_gc → states: {} — keeping original", e);
+                                    } else if !json {
+                                        eprintln!("✅ states/ pruned and swapped");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("⚠  GC Pipeline failed: {} — using unpruned states/", e);
+                                    let _ = std::fs::remove_dir_all(&states_gc);
+                                }
+                            }
+                        }
                     }
+
+                    if !json {
+                        eprintln!("✅ Live checkpoint created and validated");
+                        eprintln!("   Checkpoint: {}", checkpoint_base.display());
+                        eprintln!("   Archiving from staging (9c-blockchain untouched)");
+                    }
+                    staging_dir = Some(checkpoint_base.clone());
+                    live_checkpoint_dir = Some(checkpoint_base);
                 } else {
-                    eprintln!("⚠️ Live checkpoint failed, archiving from live source (may be inconsistent)");
+                    eprintln!("❌ Live checkpoint failed");
+                    eprintln!("   Consider stopping the node and using offline snapshot");
                     let _ = std::fs::remove_dir_all(&checkpoint_base);
+                    process::exit(1);
                 }
             }
 
-            // Use staging dir if prune succeeded, otherwise original store
             let effective_source = staging_dir
-                .as_ref()
-                .unwrap_or(&source_path)
-                .clone();
+            .as_ref()
+            .unwrap_or(&source_path)
+            .clone();
 
             if staging_dir.is_some() && !json {
                 eprintln!("   Archiving from staging (9c-blockchain untouched)");
+            }
+
+            let mut final_exclude = exclude.clone();
+
+            if mode_enum == SnapshotMode::Full {
+                let compat_dirs = vec![
+                    "blockpercept".to_string(),
+                    "txpercept".to_string(),
+                    "nextstateroothash".to_string(),
+                    "evidencec".to_string(),
+                    "evidencep".to_string(),
+                    "stagedtx".to_string(),
+                ];
+                final_exclude.extend(compat_dirs);
             }
 
             let config = SnapshotConfig {
@@ -636,31 +1054,21 @@ fn main() {
                 output: final_output,
                 level,
                 threads,
-                exclude,
+                exclude: final_exclude,
                 include,
                 mode: mode_enum,
                 epoch_limit,
                 force,
-                json,
-                dry_run,
-                incremental,
-                apv,
-                block_before,
+                    json,
+                    dry_run,
+                    incremental,
+                    apv,
+                    block_before,
             };
 
-            // ── Execute snapshot creation ──
             let snapshot_result = snapshot::create_snapshot(&config, bridge_res);
 
-            // ── Cleanup: remove staging and work dir ──
-            // 9c-blockchain/ is NEVER touched — only our temp dirs are cleaned
-            if let Some(ref work) = prune_work_dir {
-                if !json {
-                    eprintln!("🧹 Cleaning up staging directory...");
-                }
-                let _ = std::fs::remove_dir_all(work);
-            }
 
-            // Clean up live checkpoint if we created one
             if let Some(ref ckpt) = live_checkpoint_dir {
                 if !json {
                     eprintln!("🧹 Cleaning up live checkpoint...");

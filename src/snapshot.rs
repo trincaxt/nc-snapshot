@@ -46,6 +46,21 @@ fn get_mode_excludes(mode: &SnapshotMode) -> Vec<String> {
     }
 }
 
+/// Implementa GetEpochLimit do C# oficial (3 branches).
+/// Determina o limite de epochs para incluir no archive partition.
+fn get_epoch_limit_from_metadata(latest_epoch: i32, current_metadata_epoch: i32, previous_metadata_epoch: i32) -> u64 {
+    if latest_epoch == current_metadata_epoch {
+        if latest_epoch == previous_metadata_epoch {
+            return (previous_metadata_epoch - 1).max(0) as u64;
+        }
+        if previous_metadata_epoch == 0 {
+            return (current_metadata_epoch - 1).max(0) as u64;
+        }
+        return previous_metadata_epoch as u64;
+    }
+    current_metadata_epoch as u64
+}
+
 /// Parse epoch number from a directory name like "epoch20536".
 fn parse_epoch(name: &str) -> Option<u64> {
     name.strip_prefix("epoch").and_then(|n| n.parse::<u64>().ok())
@@ -161,46 +176,34 @@ fn make_fingerprint(path: &Path) -> FileFingerprint {
     FileFingerprint { size, mtime_secs }
 }
 
-/// Main snapshot creation function.
-pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>) -> anyhow::Result<SnapshotResult> {
-    let source = &config.source;
-
+/// Create a single tar.zst archive with BLAKE3 manifest.
+///
+/// Core archive-creation logic extracted for reuse.
+fn create_single_archive(
+    source: &Path,
+    output: &Path,
+    include_dirs: Option<&[String]>,
+    exclude: &[String],
+    epoch_limit: Option<u64>,
+    level: i32,
+    threads: usize,
+    json: bool,
+    incremental: bool,
+    mode_label: &str,
+) -> anyhow::Result<SnapshotResult> {
     if !source.exists() {
-        return Err(SnapshotError::SourceNotFound(source.clone()).into());
-    }
-
-    // Determine directories based on mode
-    let mode_dirs = if !config.include.is_empty() {
-        // User override takes priority
-        Some(config.include.clone())
-    } else {
-        match config.mode {
-            SnapshotMode::State => Some(STATE_DIRS.iter().map(|s| s.to_string()).collect()),
-            SnapshotMode::Partition => Some(PARTITION_DIRS.iter().map(|s| s.to_string()).collect()),
-            SnapshotMode::Full => None,
-        }
-    };
-
-    // Merge excludes: user-provided + mode-specific
-    let mut all_excludes = config.exclude.clone();
-    if config.mode == SnapshotMode::Partition {
-        all_excludes.extend(PARTITION_EXCLUDE.iter().map(|s| s.to_string()));
+        return Err(SnapshotError::SourceNotFound(source.to_path_buf()).into());
     }
 
     // Collect files
-    if !config.json {
+    if !json {
         eprint!("📂 Scanning files... ");
     }
 
-    let files = collect_files(
-        source,
-        mode_dirs.as_deref(),
-        &all_excludes,
-        config.epoch_limit,
-    );
+    let files = collect_files(source, include_dirs, exclude, epoch_limit);
     let total_size: u64 = files.iter().map(|(_, s)| *s).sum();
 
-    if !config.json {
+    if !json {
         eprintln!(
             "{} files | {:.2} GiB",
             files.len(),
@@ -213,12 +216,11 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
     }
 
     // Load previous fingerprint for incremental mode
-    let fingerprint_path = config
-        .output
+    let fingerprint_path = output
         .parent()
         .unwrap_or(Path::new("."))
         .join(".nc-snapshot-fingerprint.json");
-    let prev_db = if config.incremental {
+    let prev_db = if incremental {
         load_fingerprints(&fingerprint_path)
     } else {
         None
@@ -230,7 +232,7 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
             .into_iter()
             .filter(|(path, size)| file_changed(path, *size, db, source))
             .collect();
-        if !config.json {
+        if !json {
             eprintln!("📊 Incremental: {} changed files", filtered.len());
         }
         filtered
@@ -240,50 +242,27 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
 
     let archive_size: u64 = files.iter().map(|(_, s)| *s).sum();
 
-    // Dry run — just report
-    if config.dry_run {
-        if !config.json {
-            eprintln!("🔍 Dry run — no archive created");
-            eprintln!(
-                "   Would archive: {} files, {:.2} GiB",
-                files.len(),
-                archive_size as f64 / (1024.0 * 1024.0 * 1024.0)
-            );
-        }
-        return Ok(SnapshotResult {
-            output_path: config.output.display().to_string(),
-            mode: config.mode.to_string(),
-            original_size: archive_size,
-            compressed_size: 0,
-            file_count: files.len(),
-            elapsed_secs: 0.0,
-            throughput_mbps: 0.0,
-            reduction_pct: 0.0,
-            checksum_file: String::new(),
-        });
-    }
-
     let start = Instant::now();
 
     // Create temp file in same directory for atomic rename
-    let output_dir = config.output.parent().unwrap_or(Path::new("."));
+    let output_dir = output.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(output_dir)?;
 
-    let mut temp_file = tempfile::NamedTempFile::new_in(output_dir)
+    let temp_file = tempfile::NamedTempFile::new_in(output_dir)
         .map_err(|e| SnapshotError::io(e, "creating temp file"))?;
 
     let buf_writer = BufWriter::with_capacity(BUF_SIZE, temp_file.as_file().try_clone()?);
 
     // zstd encoder — multi-threaded
-    let mut zstd_encoder = zstd::Encoder::new(buf_writer, config.level)?;
-    zstd_encoder.multithread(config.threads as u32)?;
+    let mut zstd_encoder = zstd::Encoder::new(buf_writer, level)?;
+    zstd_encoder.multithread(threads as u32)?;
 
     let zstd_writer = zstd_encoder.auto_finish();
     let mut tar_builder = tar::Builder::new(zstd_writer);
     tar_builder.follow_symlinks(false);
 
     // Progress bar
-    let pb = if !config.json {
+    let pb = if !json {
         let pb = ProgressBar::new(archive_size);
         pb.set_style(
             ProgressStyle::with_template(
@@ -373,11 +352,11 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
 
     // Atomically move temp file to final output
     temp_file
-        .persist(&config.output)
+        .persist(output)
         .map_err(|e| SnapshotError::io(e.error, "persisting output file"))?;
 
     let elapsed = start.elapsed();
-    let compressed_size = fs::metadata(&config.output)
+    let compressed_size = fs::metadata(output)
         .map(|m| m.len())
         .unwrap_or(0);
     let throughput = archive_size as f64 / elapsed.as_secs_f64() / (1024.0 * 1024.0);
@@ -391,24 +370,12 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
     let _ = save_fingerprints(&new_fingerprints, &fingerprint_path);
 
     // Also write manifest alongside the archive
-    let manifest_path = config.output.with_extension("blake3");
+    let manifest_path = output.with_extension("blake3");
     let _ = fs::write(&manifest_path, &manifest_content);
 
-    // Write Metadata if available
-    if let Some(res) = bridge_res {
-        let meta_dir = config.output.parent().unwrap_or(Path::new(".")).join("metadata");
-        let _ = fs::create_dir_all(&meta_dir);
-        let meta_name = if config.mode == SnapshotMode::Partition { &res.partition_base_filename } else { "state_latest" };
-        let meta_path = meta_dir.join(format!("{}.json", meta_name));
-        let _ = fs::write(&meta_path, &res.stringfy_metadata);
-        if !config.json {
-            eprintln!("   Metadata   : {}", meta_path.display());
-        }
-    }
-
     let result = SnapshotResult {
-        output_path: config.output.display().to_string(),
-        mode: config.mode.to_string(),
+        output_path: output.display().to_string(),
+        mode: mode_label.to_string(),
         original_size: archive_size,
         compressed_size,
         file_count: files.len(),
@@ -418,16 +385,184 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
         checksum_file: manifest_path.display().to_string(),
     };
 
-    if !config.json {
+    if !json {
         eprintln!();
-        eprintln!("✅ Snapshot criado: {}", config.output.display());
-        eprintln!("   Modo       : {}", config.mode);
+        eprintln!("✅ Snapshot criado: {}", output.display());
         eprintln!("   Original   : {}", format_size(archive_size));
         eprintln!("   Comprimido : {}", format_size(compressed_size));
         eprintln!("   Redução    : {:.1}%", reduction);
         eprintln!("   Tempo      : {:.1}s", elapsed.as_secs_f64());
         eprintln!("   Throughput : {:.0} MB/s", throughput);
         eprintln!("   Manifest   : {}", manifest_path.display());
+    }
+
+    Ok(result)
+}
+
+/// Main snapshot creation function.
+/// For Partition mode, creates TWO archives (partition + state) + metadata JSON.
+pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>) -> anyhow::Result<SnapshotResult> {
+    let source = &config.source;
+
+    if !source.exists() {
+        return Err(SnapshotError::SourceNotFound(source.clone()).into());
+    }
+
+    // Merge excludes: user-provided + mode-specific
+    let mut all_excludes = config.exclude.clone();
+    if config.mode == SnapshotMode::Partition {
+        all_excludes.extend(PARTITION_EXCLUDE.iter().map(|s| s.to_string()));
+    }
+
+    // ── PARTITION MODE: create 2 archives + metadata ──────────────
+    if config.mode == SnapshotMode::Partition {
+        let output_dir = config.output.parent().unwrap_or(Path::new("."));
+
+        // Dry run check
+        if config.dry_run {
+            if !config.json {
+                eprintln!("🔍 Dry run — no archive created");
+            }
+            return Ok(SnapshotResult {
+                output_path: String::new(),
+                mode: "partition".to_string(),
+                original_size: 0,
+                compressed_size: 0,
+                file_count: 0,
+                elapsed_secs: 0.0,
+                throughput_mbps: 0.0,
+                reduction_pct: 0.0,
+                checksum_file: String::new(),
+            });
+        }
+
+        // 1. Partition archive: block + tx epochs (com PARTITION_EXCLUDE)
+        //    Usa GetEpochLimit do bridge ou fallback para --epoch-limit
+        let partition_dirs: Vec<String> = PARTITION_DIRS.iter().map(|s| s.to_string()).collect();
+        let partition_epoch_limit = if let Some(ref res) = bridge_res {
+            Some(get_epoch_limit_from_metadata(
+                res.latest_epoch,
+                res.current_metadata_block_epoch,
+                res.previous_metadata_block_epoch,
+            ))
+        } else {
+            config.epoch_limit
+        };
+        let partition_dir = output_dir.join("partition");
+        fs::create_dir_all(&partition_dir)?;
+        let partition_output = if let Some(ref res) = bridge_res {
+            partition_dir.join(format!("{}.tar.zst", res.partition_base_filename))
+        } else {
+            let fname = config.output.file_name().unwrap_or(std::ffi::OsStr::new("partition.tar.zst"));
+            partition_dir.join(fname)
+        };
+
+        if !config.json {
+            eprintln!("📦 Creating partition snapshot (block + tx epochs)...");
+        }
+        let _partition_result = create_single_archive(
+            source,
+            &partition_output,
+            Some(&partition_dirs),
+            &all_excludes, // inclui PARTITION_EXCLUDE (blockindex, txindex)
+            partition_epoch_limit,
+            config.level,
+            config.threads,
+            config.json,
+            config.incremental,
+            "partition",
+        )?;
+
+        // 2. State archive: block/blockindex, tx/txindex, states, chain, etc.
+        //    SEM PARTITION_EXCLUDE — precisa incluir blockindex e txindex!
+        let state_dirs: Vec<String> = STATE_DIRS.iter().map(|s| s.to_string()).collect();
+        let state_dir = output_dir.join("state");
+        fs::create_dir_all(&state_dir)?;
+        let state_output = state_dir.join("state_latest.tar.zst");
+
+        if !config.json {
+            eprintln!("📦 Creating state snapshot (indexes + states)...");
+        }
+        let state_result = create_single_archive(
+            source,
+            &state_output,
+            Some(&state_dirs),
+            &config.exclude, // SÓ excludes do usuário, SEM PARTITION_EXCLUDE
+            None, // state snapshot nao usa epoch_limit
+            config.level,
+            config.threads,
+            config.json,
+            config.incremental,
+            "state",
+        )?;
+
+        // 3. Metadata JSON (USANDO bridge_res!)
+        if let Some(res) = bridge_res {
+            let meta_dir = output_dir.join("metadata");
+            fs::create_dir_all(&meta_dir)?;
+            let meta_path = meta_dir.join(format!("{}.json", res.partition_base_filename));
+            fs::write(&meta_path, &res.stringfy_metadata)?;
+            if !config.json {
+                eprintln!("   Metadata   : {}", meta_path.display());
+            }
+        }
+
+        return Ok(state_result);
+    }
+
+    // ── STATE / FULL MODE: create single archive ──────────────────
+
+    // Dry run check
+    if config.dry_run {
+        if !config.json {
+            eprintln!("🔍 Dry run — no archive created");
+        }
+        return Ok(SnapshotResult {
+            output_path: String::new(),
+            mode: config.mode.to_string(),
+            original_size: 0,
+            compressed_size: 0,
+            file_count: 0,
+            elapsed_secs: 0.0,
+            throughput_mbps: 0.0,
+            reduction_pct: 0.0,
+            checksum_file: String::new(),
+        });
+    }
+
+    let mode_dirs = if !config.include.is_empty() {
+        Some(config.include.clone())
+    } else {
+        match config.mode {
+            SnapshotMode::State => Some(STATE_DIRS.iter().map(|s| s.to_string()).collect()),
+            SnapshotMode::Full => None,
+            SnapshotMode::Partition => unreachable!(), // handled above
+        }
+    };
+
+    let result = create_single_archive(
+        source,
+        &config.output,
+        mode_dirs.as_deref(),
+        &all_excludes,
+        config.epoch_limit,
+        config.level,
+        config.threads,
+        config.json,
+        config.incremental,
+        config.mode.to_string().as_str(),
+    )?;
+
+    // Write Metadata if available (for State/Full mode)
+    if let Some(res) = bridge_res {
+        let meta_dir = config.output.parent().unwrap_or(Path::new(".")).join("metadata");
+        let _ = fs::create_dir_all(&meta_dir);
+        let meta_name = "state_latest";
+        let meta_path = meta_dir.join(format!("{}.json", meta_name));
+        let _ = fs::write(&meta_path, &res.stringfy_metadata);
+        if !config.json {
+            eprintln!("   Metadata   : {}", meta_path.display());
+        }
     }
 
     Ok(result)
