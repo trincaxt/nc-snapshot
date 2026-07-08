@@ -475,9 +475,7 @@ nc-snapshot/
 │   └── errors.rs                         ← Error types
 ├── checkpoint-bridge-for-rust/           ← CheckpointBridge C# source
 │   ├── Program.cs
-│   ├── CheckpointBridge.csproj
-│   └── GcPipeline/                       ← GC Pipeline C# source (reference)
-├── inspect/                              ← Inspection utilities
+│   └── CheckpointBridge.csproj
 ├── Cargo.toml
 └── target/release/nc-snapshot            ← Final binary
 ```
