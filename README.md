@@ -99,7 +99,7 @@ Archive
 
 Benchmarks collected from a production Odin node.
 
-| Metric | Official | nc-snapshot |
+| Metric | NineChronicles.Snapshot (GC) | nc-snapshot |
 |---------|---------:|------------:|
 | Total Snapshot | ~2h14m | **1h16m** |
 | GC Pipeline | ~109 min | **35 min** |
