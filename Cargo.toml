@@ -19,6 +19,8 @@ thiserror = "2"
 walkdir = "2.5"
 zstd = { version = "0.13", features = ["zstdmt"] }
 memmap2 = "0.9.11"
+hex = "0.4"
+#bencodex = { path = "bencodex/bencodex-rs", package = "bencodex-rs" }
 
 [profile.release]
 opt-level = 3
