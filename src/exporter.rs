@@ -5,7 +5,7 @@
 //! com buffer de 128MB e escrita em chunk único.
 
 use anyhow::{Context, Result};
-use rocksdb::{DB, IteratorMode, Options};
+use rocksdb::{DB, IteratorMode, Options, ReadOptions};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -51,8 +51,13 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
     let mut count = 0u64;
     let mut last_log = Instant::now();
 
-    // ── Scan sequencial com Iterator ────────────────────────────────
-    let iter = db.iterator(IteratorMode::Start);
+    // ── Scan sequencial com readahead grande + sem checksum ──────────
+    // (CPU-bound no 2400G: 32MB prefetch, NVMe feliz)
+    let mut read_opts = ReadOptions::default();
+    read_opts.set_readahead_size(32 * 1024 * 1024); // 32MB prefetch
+    read_opts.set_verify_checksums(false);          // C# --gc-validate revalida depois
+
+    let iter = db.iterator_opt(IteratorMode::Start, read_opts);
 
     for item in iter {
         let (key, value) = item
