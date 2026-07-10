@@ -8,6 +8,7 @@ description = "Nine Chronicles blockchain state snapshot tool"
 anyhow = "1"
 rayon = "1.10"
 blake3 = "1"
+chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"
 num_cpus = "1"
@@ -22,7 +23,8 @@ zstd = { version = "0.13", features = ["zstdmt"] }
 memmap2 = "0.9.11"
 hex = "0.4"
 rustc-hash = "2"
-#bencodex = { path = "bencodex/bencodex-rs", package = "bencodex-rs" }
+memchr = "2.7"
+bencodex = { path = "bencodex/bencodex-rs", package = "bencodex-rs" }
 
 [profile.release]
 opt-level = 3

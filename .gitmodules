@@ -1,0 +1,3 @@
+[submodule "bencodex"]
+	path = bencodex
+	url = https://github.com/moreal/bencodex-rs
