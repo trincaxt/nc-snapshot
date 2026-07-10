@@ -52,16 +52,34 @@ The GC concept was first validated on a forked `NineChronicles.Snapshot` in C#, 
 ### Requirements
 
 - Rust 1.75+
-- Linux x64
+- Linux x86_64
+- Git
 - A Nine Chronicles blockchain directory (e.g. `~/9c-blockchain`)
-### Build the Rust binary
+
+### Clone
+
+```bash
+git clone --recurse-submodules https://github.com/trincaxt/nc-snapshot.git
+cd nc-snapshot
+```
+
+> If you already cloned the repository without submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Build
 
 ```bash
 cargo build --release
-# Binary: ./target/release/nc-snapshot
 ```
 
----
+Binary:
+
+```text
+./target/release/nc-snapshot
+```
 
 ## 🛠️ Usage
 
