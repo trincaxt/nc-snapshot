@@ -6,11 +6,18 @@ mod verify;
 mod gc_filter;
 mod pruner;
 mod exporter;
+mod chain_reader;
+mod checkpoint_secondary;
 
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command};
-use types::{BridgeResult, SnapshotConfig, SnapshotMode};
+use std::process;
+use types::{BridgeResult, SnapshotConfig, SnapshotMode, BlockMetadata};
+use std::fs;
+
+
+const EPOCH_UNIT_SECONDS: i64 = 86400; // 24 horas
+
 
 #[derive(Parser, Debug)]
 #[command(
@@ -138,293 +145,221 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn fetch_metadata(
+/// Gera metadata 100% Rust puro (sem C# bridge).
+fn fetch_metadata_hybrid(
     source: &Path,
     apv: &str,
     block_before: i32,
-    mode: &str,
+    _mode: &str,
+    output_dir: &Path,
+    json_output: bool,
 ) -> anyhow::Result<BridgeResult> {
-    let prepare_args = serde_json::json!({
-        "Apv": apv,
-        "OutputDirectory": ".",
-        "StorePath": source.to_string_lossy(),
-                                         "BlockBefore": block_before,
-                                         "BypassCopyStates": true,
-                                         "SnapshotType": mode
-    });
-
-    let bridge_bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("bridge-bin")
-    .join("NineChronicles.Snapshot.Bridge");
-
-    let output = Command::new(&bridge_bin)
-    .arg(prepare_args.to_string())
-    .output()?;
-
-    // Bridge sempre escreve o resultado JSON no stdout (mesmo em erro)
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let last_line = stdout
-    .lines()
-    .last()
-    .ok_or_else(|| anyhow::anyhow!("Empty bridge output"))?;
-    let res: BridgeResult = serde_json::from_str(last_line)?;
-
-    if !output.status.success() || !res.success {
-        let err_msg = res.error.unwrap_or_else(|| "Unknown error".to_string());
-        let stderr_msg = String::from_utf8_lossy(&output.stderr);
-        let details = if stderr_msg.is_empty() { err_msg } else { format!("{} | stderr: {}", err_msg, stderr_msg) };
-        anyhow::bail!("C# Bridge failed: {}", details);
+    if !json_output {
+        eprintln!("🟢 Fetching metadata from checkpoint (no LOCK conflicts)...");
     }
 
-    Ok(res)
+    let (metadata_json, partition_filename, latest_epoch) = 
+        generate_metadata_rust(source, apv, block_before, output_dir, json_output)?;
+
+    if !json_output {
+        eprintln!("  ✅ Rust metadata complete!");
+    }
+
+    let current_metadata_block_epoch = get_metadata_epoch(&output_dir.join("metadata"), "BlockEpoch");
+    let previous_metadata_block_epoch = get_metadata_epoch(&output_dir.join("metadata"), "PreviousBlockEpoch");
+
+    Ok(BridgeResult {
+        success: true,
+        error: None,
+        partition_base_filename: partition_filename,
+        state_base_filename: "state_latest".to_string(),
+        latest_epoch,
+        current_metadata_block_epoch,
+        previous_metadata_block_epoch,
+        stringfy_metadata: metadata_json,
+    })
 }
 
-/// Hard-link ou copia (fallback cross-device) um único arquivo.
-fn link_or_copy(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    match std::fs::hard_link(src, dst) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(_) => {
-            std::fs::copy(src, dst)?;
-            Ok(())
-        }
-    }
-}
-
-/// Checkpoint consistente via CheckpointBridge (secondary + catch_up + flush).
-/// Usado SÓ pros DBs de índice pequenos que o metadata/state-root leem cross-DB,
-/// onde o hardlink cru perde a última memtable e quebra o lookup de tip.
-fn create_validated_checkpoint_via_bridge(
-    src_dir: &Path,
-    dst_dir: &Path,
-) -> anyhow::Result<PathBuf> {
-    use anyhow::Context;
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct CheckpointResult {
-        #[serde(rename = "Success")]
-        success: bool,
-        #[serde(rename = "ValidatedPath")]
-        validated_path: Option<String>,
-        #[serde(rename = "Error")]
-        error: Option<String>,
-    }
-
-    let bridge_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("bridge-bin")
-        .join("checkpoint")
-        .join("CheckpointBridge");
-
-    if !bridge_path.exists() {
-        anyhow::bail!("CheckpointBridge not found: {}", bridge_path.display());
-    }
-
-    let output = Command::new(&bridge_path)
-        .arg(src_dir.to_string_lossy().as_ref())
-        .arg(dst_dir.to_string_lossy().as_ref())
-        .output()
-        .with_context(|| format!("Failed to execute CheckpointBridge: {}", bridge_path.display()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!("CheckpointBridge failed: {}\nStdout: {}\nStderr: {}", output.status, stdout, stderr);
-    }
-
-    let stdout = String::from_utf8(output.stdout)?;
-    let result: CheckpointResult = serde_json::from_str(&stdout)
-        .with_context(|| format!("Failed to parse bridge output: {}", stdout))?;
-
-    if result.success {
-        result.validated_path
-            .map(PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("Bridge returned success but no path"))
-    } else {
-        anyhow::bail!("CheckpointBridge failed: {}", result.error.unwrap_or_else(|| "Unknown error".to_string()));
-    }
-}
-
-/// DBs de índice que precisam de checkpoint consistente (tip completo cross-DB).
-/// Todo o resto (states/ + epochs de block/tx) vai de hardlink Rust — rápido.
-const CONSISTENT_INDEX_DIRS: &[&str] = &[
-    "states",
-    "chain",
-    "block/blockindex",
-    "tx/txindex",
-    "nextstateroothash",
-];
-
-/// Escolhe a estratégia por DB: consistente (C#) pros índices, hardlink (Rust) pro resto.
+/// Creates a consistent RocksDB checkpoint using secondary mode (100% Rust 🦀).
 fn checkpoint_db(rel_path: &str, src: &Path, dst: &Path, json: bool) -> anyhow::Result<PathBuf> {
-    if CONSISTENT_INDEX_DIRS.contains(&rel_path) {
-        if !json {
-            eprintln!("    🔒 {} via checkpoint consistente (C#)...", rel_path);
-        }
-        create_validated_checkpoint_via_bridge(src, dst)
-    } else {
-        if !json {
-            eprintln!("    🦀 {} via hard-link (Rust)...", rel_path);
-        }
-        create_checkpoint_hardlink(src, dst, json)
-    }
-}
-
-/// Checkpoint via hard-link em duas passadas (Rust 🦀, ~instantâneo).
-/// SSTs (imutáveis) primeiro, MANIFEST/CURRENT/OPTIONS por último — assim o
-/// MANIFEST só referencia SSTs que já existem no destino. Formato IDÊNTICO ao
-/// que o Libplanet escreveu (sem re-serialização, sem mismatch de librocksdb).
-/// Substitui create_validated_checkpoint_via_bridge (C#, 5-30 min).
-fn create_checkpoint_hardlink(src_dir: &Path, dst_dir: &Path, _json: bool) -> anyhow::Result<PathBuf> {
-    use anyhow::Context;
-    use std::fs;
-
-    if dst_dir.exists() {
-        fs::remove_dir_all(dst_dir).with_context(|| format!("rm dst: {}", dst_dir.display()))?;
-    }
-    fs::create_dir_all(dst_dir).with_context(|| format!("mkdir dst: {}", dst_dir.display()))?;
-
-    let scan_ssts = |acc: &mut Vec<(PathBuf, String)>| -> anyhow::Result<()> {
-        for e in fs::read_dir(src_dir)? {
-            let e = e?;
-            if !e.file_type()?.is_file() { continue; }
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.ends_with(".sst") { acc.push((e.path(), name)); }
-        }
-        Ok(())
-    };
-
-    // Passo 1: SSTs (dados imutáveis)
-    let mut ssts = Vec::new();
-    scan_ssts(&mut ssts)?;
-    for (src, name) in &ssts {
-        link_or_copy(src, &dst_dir.join(name)).with_context(|| format!("SST {name}"))?;
-    }
-
-    // Passo 2: metadata por último (MANIFEST/CURRENT/OPTIONS referenciam os SSTs já linkados)
-    for e in fs::read_dir(src_dir)? {
-        let e = e?;
-        if !e.file_type()?.is_file() { continue; }
-        let name = e.file_name().to_string_lossy().to_string();
-        if name == "LOCK" || name.ends_with(".sst") { continue; } // nunca linka LOCK; SSTs já foram
-        link_or_copy(&e.path(), &dst_dir.join(&name)).with_context(|| format!("meta {name}"))?;
-    }
-
-    // Passo 3: re-link de SSTs criados por compaction durante a cópia (guarda anti-race no live)
-    let mut ssts2 = Vec::new();
-    scan_ssts(&mut ssts2)?;
-    for (src, name) in &ssts2 {
-        let dst = dst_dir.join(name);
-        if !dst.exists() { link_or_copy(src, &dst)?; }
-    }
-
-    Ok(dst_dir.to_path_buf())
-}
-
-/// Batch hard-link para epoch dirs >= epoch_validate (Rust 🦀).
-/// Substitui create_validated_checkpoint_batch (C#). Mesma assinatura/semântica.
-fn create_checkpoint_batch_hardlink(
-    src_root: &Path,
-    dst_root: &Path,
-    epoch_validate: u64,
-    json: bool,
-) -> anyhow::Result<PathBuf> {
-    use anyhow::Context;
-    use std::fs;
-
-    let mut epochs: Vec<(u64, PathBuf)> = Vec::new();
-    for e in fs::read_dir(src_root).with_context(|| format!("read {}", src_root.display()))? {
-        let e = e?;
-        let p = e.path();
-        if !p.is_dir() { continue; }
-        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-        if let Some(rest) = name.strip_prefix("epoch") {
-            if let Ok(n) = rest.parse::<u64>() {
-                if n >= epoch_validate { epochs.push((n, p)); }
-            }
-        }
-    }
-    epochs.sort_by_key(|(n, _)| *n);
-
     if !json {
-        eprintln!("      Found {} epochs to link (>= {})", epochs.len(), epoch_validate);
+        eprintln!("    🦀 {} via secondary mode (Rust)...", rel_path);
     }
-    fs::create_dir_all(dst_root)?;
-
-    for (i, (n, src)) in epochs.iter().enumerate() {
-        let dst = dst_root.join(format!("epoch{}", n));
-        if !json {
-            eprintln!("      [{}/{}] epoch{}", i + 1, epochs.len(), n);
-        }
-        create_checkpoint_hardlink(src, &dst, json)?;
-    }
-    Ok(dst_root.to_path_buf())
+    
+    checkpoint_secondary::create_checkpoint_secondary(src, dst)?;
+    Ok(dst.to_path_buf())
 }
 
-/// State dirs needed for state snapshot mode.
-const STATE_LINK_DIRS: &[&str] = &[
-    "block/blockindex",
-"tx/txindex",
-"txbindex",
-"chain",
-"blockcommit",
-"txexec",
-];
-
-/// Chama CheckpointBridge --get-state-root no checkpoint criado.
-fn get_state_root_from_checkpoint(
-    bridge_path: &Path,
+/// Lê o StateRootHash do checkpoint — 100% Rust puro.
+fn get_state_root_from_checkpoint_hybrid(
     checkpoint_base: &Path,
     block_before: i32,
     json: bool,
-) -> anyhow::Result<String> {
-    use anyhow::Context;
-
-    let store_path = checkpoint_base;
-
+) -> anyhow::Result<(String, i64)> {
     if !json {
-        eprintln!("  Getting state root from checkpoint...");
+        eprintln!("  🦀 Reading state root from checkpoint (Rust)...");
     }
 
-    let output = std::process::Command::new(bridge_path)
-    .arg("--get-state-root")
-    .arg(store_path.as_os_str())
-    .arg("--block-before")
-    .arg(block_before.to_string())
-    .output()
-    .context("Failed to run CheckpointBridge --get-state-root")?;
+    let tip = chain_reader::read_state_root_from_checkpoint(
+        checkpoint_base,
+        block_before as u64,
+    )?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result: serde_json::Value = serde_json::from_str(stdout.trim())
-    .context("Invalid JSON from --get-state-root")?;
-
-    if !result["Success"].as_bool().unwrap_or(false) {
-        anyhow::bail!("{}", result["Error"].as_str().unwrap_or("unknown error"));
-    }
-
-    let srh = result["StateRootHash"]
-    .as_str()
-    .ok_or_else(|| anyhow::anyhow!("Missing StateRootHash in response"))?
-    .to_string();
-
+    let srh = hex::encode(tip.state_root_hash);
     if !json {
-        eprintln!("  StateRoot: {}...", &srh[..16]);
-        eprintln!("  Block #{}",
-                  result["BlockIndex"].as_i64().unwrap_or(-1));
+        eprintln!("  ✅ Rust: StateRoot {}...", &srh[..16]);
+        eprintln!("  ✅ Rust: Block #{}", tip.block_index);
     }
-    Ok(srh)
+
+    Ok((srh, tip.block_index))
 }
 
-/// Chama CheckpointBridge --gc-pipeline e parseia o resultado.
+/// Lê o epoch do metadata anterior (metadata/*.json mais recente).
+/// Retorna 0 se não houver metadata anterior.
+fn get_metadata_epoch(metadata_dir: &Path, epoch_type: &str) -> i32 {
+    if !metadata_dir.exists() {
+        return 0;
+    }
+
+    match fs::read_dir(metadata_dir) {
+        Ok(entries) => {
+            let mut json_files: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s == "json")
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            if json_files.is_empty() {
+                return 0;
+            }
+
+            // Ordena por mtime (mais recente primeiro)
+            json_files.sort_by(|a, b| {
+                let a_meta = a.metadata().ok();
+                let b_meta = b.metadata().ok();
+                let a_time = a_meta.and_then(|m| m.modified().ok());
+                let b_time = b_meta.and_then(|m| m.modified().ok());
+                b_time.cmp(&a_time)
+            });
+
+            // Lê o primeiro (mais recente)
+            if let Some(file) = json_files.first() {
+                if let Ok(content) = fs::read_to_string(file.path()) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(epoch) = json.get(epoch_type).and_then(|v| v.as_i64()) {
+                            return epoch as i32;
+                        }
+                    }
+                }
+            }
+
+            0
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Calcula o nome base do arquivo partition.
+fn get_partition_base_filename(
+    current_metadata_block_epoch: i32,
+    current_metadata_tx_epoch: i32,
+    latest_epoch: i32,
+) -> String {
+    if current_metadata_block_epoch == 0 && current_metadata_tx_epoch == 0 {
+        format!("snapshot-{}-{}", latest_epoch - 1, latest_epoch - 1)
+    } else {
+        format!("snapshot-{}-{}", latest_epoch, latest_epoch)
+    }
+}
+
+/// Gera o metadata JSON em Rust puro (byte-idêntico ao C# bridge).
+fn generate_metadata_rust(
+    checkpoint_base: &Path,
+    apv: &str,
+    block_before: i32,
+    output_dir: &Path,
+    json_output: bool,
+) -> anyhow::Result<(String, String, i32)> {
+    use anyhow::Context;
+
+    if !json_output {
+        eprintln!("  🦀 Trying Rust metadata generator...");
+    }
+
+    // 1. Lê informações completas do header
+    let header = chain_reader::read_block_header_from_checkpoint(checkpoint_base, block_before as u64)?;
+
+    // 2. Calcula latest epoch (do timestamp do bloco)
+    let timestamp_parsed = chrono::DateTime::parse_from_rfc3339(&header.timestamp)
+        .context("Failed to parse timestamp")?;
+    let latest_epoch = (timestamp_parsed.timestamp() / EPOCH_UNIT_SECONDS) as i32;
+
+    // 3. Lê epochs do metadata anterior
+    let metadata_dir = output_dir.join("metadata");
+    let current_metadata_block_epoch = get_metadata_epoch(&metadata_dir, "BlockEpoch");
+    let current_metadata_tx_epoch = get_metadata_epoch(&metadata_dir, "TxEpoch");
+    let previous_metadata_block_epoch = get_metadata_epoch(&metadata_dir, "PreviousBlockEpoch");
+
+    // 4. Calcula previous epochs
+    let (previous_block_epoch, previous_tx_epoch) = if current_metadata_block_epoch == latest_epoch {
+        (previous_metadata_block_epoch, previous_metadata_block_epoch)
+    } else {
+        (current_metadata_block_epoch, current_metadata_tx_epoch)
+    };
+
+    // 5. Calcula block/tx epochs
+    let (block_epoch, tx_epoch) = if current_metadata_block_epoch == 0 && current_metadata_tx_epoch == 0 {
+        (latest_epoch - 1, latest_epoch - 1)
+    } else {
+        (latest_epoch, latest_epoch)
+    };
+
+    // 6. Monta o metadata
+    let metadata = BlockMetadata {
+        index: header.index,
+        timestamp: header.timestamp.clone(),
+        state_root_hash: hex::encode(header.state_root_hash),
+        previous_hash: hex::encode(header.previous_hash),
+        tx_hash: hex::encode(header.tx_hash),
+        apv: apv.to_string(),
+        block_epoch,
+        tx_epoch,
+        previous_block_epoch,
+        previous_tx_epoch,
+    };
+
+    // 7. Serializa para JSON (sem formatação, igual ao C#)
+    let metadata_json = serde_json::to_string(&metadata)
+        .context("Failed to serialize metadata")?;
+
+    // 8. Nome do arquivo partition
+    let partition_filename = get_partition_base_filename(
+        current_metadata_block_epoch,
+        current_metadata_tx_epoch,
+        latest_epoch,
+    );
+
+    if !json_output {
+        eprintln!("  ✅ Rust metadata generated!");
+        eprintln!("     Block #{}, epoch {}", header.index, latest_epoch);
+    }
+
+    Ok((metadata_json, partition_filename, latest_epoch))
+}
+
+/// Executa o GC Pipeline completo — 100% Rust 🦀.
 fn run_gc_pipeline(
-    bridge_path: &Path,
     source_states: &Path,
     dest_states: &Path,
     root_hash_hex: &str,
     json: bool,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
-    use std::process::Stdio;
 
     let checkpoint_dir = source_states.parent().unwrap_or(Path::new("."));
     let export_file = checkpoint_dir.join("states_export.bin");
@@ -434,8 +369,7 @@ fn run_gc_pipeline(
         eprintln!("  Source: {}", source_states.display());
         eprintln!("  Dest : {}", dest_states.display());
         eprintln!("  Root : {}...", &root_hash_hex[..16]);
-        eprintln!("  ⏳ Running GC Pipeline (Export Rust + BFS Rust + Prune Rust + Validate C#)...");
-        eprintln!("  🚀 TUDO EM RUST MENOS VALIDAÇÃO!");
+        eprintln!("  ⏳ Running GC Pipeline 100% Rust 🦀...");
         eprintln!();
     }
 
@@ -470,11 +404,10 @@ fn run_gc_pipeline(
         eprintln!("🗑️ Phase 3: Prune (Rust 🦀 - RÁPIDO!)...");
     }
 
-    // Executar prune em Rust (passa o arquivo de live keys)
     let result = pruner::prune_states(
         source_states,
         dest_states,
-        &live_keys_file, // ← PASSA O ARQUIVO!
+        &live_keys_file,
         json,
     )?;
 
@@ -483,32 +416,28 @@ fn run_gc_pipeline(
                   result.nodes_copied, result.nodes_deleted);
     }
 
-    // ── Phase 4: Validate (C#) ──────────────────────────────────────
+    // ── Phase 4: Validate (RUST 🦀) ─────────────────────────────────
     if !json {
-        eprintln!("🔍 Phase 4: Validating pruned states/ (C#)...");
+        eprintln!("🔍 Phase 4: Validating pruned states/ (Rust 🦀)...");
     }
 
-    let validate_output = std::process::Command::new(bridge_path)
-    .arg("--gc-validate")
-    .arg(dest_states.as_os_str())
-    .stderr(Stdio::inherit())
-    .output()
-    .context("Failed to run CheckpointBridge --gc-validate")?;
+    chain_reader::validate_states(dest_states)
+        .context("Failed to validate pruned states/")?;
 
-    if !validate_output.status.success() {
-        anyhow::bail!("Validation failed");
+    if !json {
+        eprintln!("  ✅ Validation passed!");
     }
 
-    // ── Limpar arquivos temporários ─────────────────────────────
+    // ── Cleanup temporary files ────────────────────────────────
     let _ = std::fs::remove_file(&export_file);
     let _ = std::fs::remove_file(&live_keys_file);
 
     if !json {
-        eprintln!("✅ GC Pipeline complete! (Prune em Rust 🦀)");
+        eprintln!("✅ GC Pipeline complete! 100% Rust 🦀");
         eprintln!("  📊 Phase 1 (Export): Rust 🦀");
         eprintln!("  📊 Phase 2 (BFS): Rust 🦀");
         eprintln!("  📊 Phase 3 (Prune): Rust 🦀");
-        eprintln!("  📊 Phase 4 (Validate): C# 9C");
+        eprintln!("  📊 Phase 4 (Validate): Rust 🦀");
     }
 
     Ok(())
@@ -571,7 +500,8 @@ fn main() {
                     if !json {
                         eprintln!("🚀 Fetching blockchain metadata...");
                     }
-                    match fetch_metadata(&source_path, apv_val, block_before, &mode) {
+                    let metadata_output_dir = output_dir.as_ref().map(|p| p.as_path()).unwrap_or_else(|| Path::new("."));
+                    match fetch_metadata_hybrid(&source_path, apv_val, block_before, &mode, metadata_output_dir, json) {
                         Ok(res) => {
                             if !res.success {
                                 eprintln!("❌ Bridge error: {:?}", res.error);
@@ -665,19 +595,9 @@ fn main() {
                 let _ = std::fs::remove_dir_all(&checkpoint_base);
                 let _ = std::fs::create_dir_all(&checkpoint_base);
 
-                let bridge_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("bridge-bin")
-                .join("checkpoint")
-                .join("CheckpointBridge");
-
-                if !bridge_path.exists() {
-                    eprintln!("❌ CheckpointBridge not found: {}", bridge_path.display());
-                    process::exit(1);
-                }
-
                 if !json {
-                    eprintln!("📸 Creating live checkpoint via hard-links (Rust 🦀)...");
-                    eprintln!("   Two-pass: SSTs first, MANIFEST last (formato idêntico ao Libplanet)");
+                    eprintln!("📸 Creating live checkpoint via secondary mode (Rust 🦀)...");
+                    eprintln!("   Using RocksDB secondary mode for consistent checkpoints");
                     eprintln!("   Expected time: ~seconds");
                 }
 
@@ -785,11 +705,12 @@ fn main() {
                                     eprintln!("  📦 Processing block epochs (>= {})...", validate_epoch);
                                 }
 
-                                match create_checkpoint_batch_hardlink(
-                                    &block_root,
-                                    &block_dst_root,
+                                // 🦀 100% RUST: Using secondary mode for all epochs
+                                match checkpoint_secondary::checkpoint_batch_epochs(
+                                    "block",
+                                    &source_path,
+                                    &checkpoint_base,
                                     validate_epoch,
-                                    json,
                                 ) {
                                     Ok(_) => {
                                         if !json {
@@ -814,11 +735,12 @@ fn main() {
                                     eprintln!("  📦 Processing tx epochs (>= {})...", validate_epoch);
                                 }
 
-                                match create_checkpoint_batch_hardlink(
-                                    &tx_root,
-                                    &tx_dst_root,
+                                // 🦀 100% RUST: Using secondary mode for tx epochs
+                                match checkpoint_secondary::checkpoint_batch_epochs(
+                                    "tx",
+                                    &source_path,
+                                    &checkpoint_base,
                                     validate_epoch,
-                                    json,
                                 ) {
                                     Ok(_) => {
                                         if !json {
@@ -887,11 +809,12 @@ fn main() {
                                     eprintln!("  📦 Processing block epochs (>= {})...", validate_epoch);
                                 }
 
-                                match create_checkpoint_batch_hardlink(
-                                    &block_root,
-                                    &block_dst_root,
+                                // 🦀 100% RUST: Using secondary mode for all epochs
+                                match checkpoint_secondary::checkpoint_batch_epochs(
+                                    "block",
+                                    &source_path,
+                                    &checkpoint_base,
                                     validate_epoch,
-                                    json,
                                 ) {
                                     Ok(_) => {
                                         if !json {
@@ -916,11 +839,12 @@ fn main() {
                                     eprintln!("  📦 Processing tx epochs (>= {})...", validate_epoch);
                                 }
 
-                                match create_checkpoint_batch_hardlink(
-                                    &tx_root,
-                                    &tx_dst_root,
+                                // 🦀 100% RUST: Using secondary mode for tx epochs
+                                match checkpoint_secondary::checkpoint_batch_epochs(
+                                    "tx",
+                                    &source_path,
+                                    &checkpoint_base,
                                     validate_epoch,
-                                    json,
                                 ) {
                                     Ok(_) => {
                                         if !json {
@@ -941,10 +865,8 @@ fn main() {
                     // ── LIVE: fetch_metadata DEPOIS do checkpoint (no checkpoint, sem LOCK!) ──
                     if let Some(ref apv_val) = apv {
                         if bridge_res.is_none() {
-                            if !json {
-                                eprintln!("🟢 Fetching metadata from checkpoint (no LOCK conflicts)...");
-                            }
-                            match fetch_metadata(&checkpoint_base, apv_val, block_before, &mode) {
+                            let metadata_output_dir = output_dir.as_ref().map(|p| p.as_path()).unwrap_or_else(|| Path::new("."));
+                            match fetch_metadata_hybrid(&checkpoint_base, apv_val, block_before, &mode, metadata_output_dir, json) {
                                 Ok(res) => {
                                     if !res.success {
                                         eprintln!("❌ Bridge error: {:?}", res.error);
@@ -978,13 +900,12 @@ fn main() {
                             eprintln!("🧹 Running GC Pipeline on checkpoint states/...");
                         }
 
-                        let state_root_hex = match get_state_root_from_checkpoint(
-                            &bridge_path,
+                        let state_root_hex = match get_state_root_from_checkpoint_hybrid(
                             &checkpoint_base,
                             block_before,
                             json,
                         ) {
-                            Ok(srh) => srh,
+                            Ok((srh, _block_index)) => srh,
                             Err(e) => {
                                 eprintln!("⚠ Could not read state root: {} — skipping prune", e);
                                 String::new()
@@ -996,7 +917,6 @@ fn main() {
                             let states_gc = checkpoint_base.join("states_gc");
 
                             match run_gc_pipeline(
-                                &bridge_path,
                                 &states_src,
                                 &states_gc,
                                 &state_root_hex,

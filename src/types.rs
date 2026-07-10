@@ -110,3 +110,44 @@ pub struct BridgeResult {
     pub previous_metadata_block_epoch: i32,
     pub stringfy_metadata: String,
 }
+
+/// Block metadata para geração do JSON de metadata (Rust puro).
+/// Struct espelha o formato JSON do bridge C# original.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockMetadata {
+    /// Block index
+    pub index: i64,
+    
+    /// Timestamp ISO 8601
+    pub timestamp: String,
+    
+    /// State root hash (hex)
+    pub state_root_hash: String,
+    
+    /// Previous block hash (hex)
+    pub previous_hash: String,
+    
+    /// Transaction root hash (hex)
+    pub tx_hash: String,
+    
+    /// Application Protocol Version
+    #[serde(rename = "APV")]
+    pub apv: String,
+    
+    /// Current block epoch
+    #[serde(rename = "BlockEpoch")]
+    pub block_epoch: i32,
+    
+    /// Current tx epoch
+    #[serde(rename = "TxEpoch")]
+    pub tx_epoch: i32,
+    
+    /// Previous block epoch
+    #[serde(rename = "PreviousBlockEpoch")]
+    pub previous_block_epoch: i32,
+    
+    /// Previous tx epoch
+    #[serde(rename = "PreviousTxEpoch")]
+    pub previous_tx_epoch: i32,
+}
