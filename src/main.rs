@@ -12,6 +12,7 @@ mod checkpoint_secondary;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Instant;
 use types::{BridgeResult, SnapshotConfig, SnapshotMode, BlockMetadata};
 use std::fs;
 
@@ -361,6 +362,8 @@ fn run_gc_pipeline(
 ) -> anyhow::Result<()> {
     use anyhow::Context;
 
+    let pipeline_start = Instant::now();
+
     let checkpoint_dir = source_states.parent().unwrap_or(Path::new("."));
     let export_file = checkpoint_dir.join("states_export.bin");
     let live_keys_file = checkpoint_dir.join("live_keys.bin");
@@ -374,18 +377,23 @@ fn run_gc_pipeline(
     }
 
     // ── Phase 1: Export (RUST) ──────────────────────────────────────
+    let phase1_start = Instant::now();
     if !json {
         eprintln!("📤 Phase 1: Exporting states/ (Rust 🦀)...");
     }
 
     let export_result = exporter::export_states(source_states, &export_file)?;
+    let phase1_elapsed = phase1_start.elapsed().as_secs_f64();
 
     if !json {
-        eprintln!("  ✅ Exported {:.0} entries in {:.1}s",
-                  export_result.total_entries, export_result.elapsed_secs);
+        eprintln!("  ✅ Exported {:.0} entries in {:.1}s  |  {:.1} min",
+                  export_result.total_entries,
+                  export_result.elapsed_secs,
+                  phase1_elapsed / 60.0);
     }
 
     // ── Phase 2: BFS (RUST) ──────────────────────────────────────
+    let phase2_start = Instant::now();
     if !json {
         eprintln!("🌳 Phase 2: BFS (Rust 🦀 - SCAN SEQUENCIAL, ~500 MB RAM)...");
     }
@@ -398,8 +406,10 @@ fn run_gc_pipeline(
         roots,
         &live_keys_file,
     )?;
+    let phase2_elapsed = phase2_start.elapsed().as_secs_f64();
 
     // ── Phase 3: Prune (RUST) ──────────────────────────────────────
+    let phase3_start = Instant::now();
     if !json {
         eprintln!("🗑️ Phase 3: Prune (Rust 🦀 - RÁPIDO!)...");
     }
@@ -410,22 +420,27 @@ fn run_gc_pipeline(
         &live_keys_file,
         json,
     )?;
+    let phase3_elapsed = phase3_start.elapsed().as_secs_f64();
 
     if !json {
-        eprintln!("  ✅ Prune: {} kept, {} deleted",
-                  result.nodes_copied, result.nodes_deleted);
+        eprintln!("  ✅ Prune: {} kept, {} deleted  |  {:.1} min",
+                  result.nodes_copied,
+                  result.nodes_deleted,
+                  phase3_elapsed / 60.0);
     }
 
     // ── Phase 4: Validate (RUST 🦀) ─────────────────────────────────
+    let phase4_start = Instant::now();
     if !json {
         eprintln!("🔍 Phase 4: Validating pruned states/ (Rust 🦀)...");
     }
 
     chain_reader::validate_states(dest_states)
         .context("Failed to validate pruned states/")?;
+    let phase4_elapsed = phase4_start.elapsed().as_secs_f64();
 
     if !json {
-        eprintln!("  ✅ Validation passed!");
+        eprintln!("  ✅ Validation passed!  |  {:.1}s", phase4_elapsed);
     }
 
     // ── Cleanup temporary files ────────────────────────────────
@@ -433,11 +448,24 @@ fn run_gc_pipeline(
     let _ = std::fs::remove_file(&live_keys_file);
 
     if !json {
+        let total_elapsed = pipeline_start.elapsed().as_secs_f64();
+        let total_nodes = result.nodes_copied + result.nodes_deleted;
+        let pct_removed = if total_nodes > 0 {
+            result.nodes_deleted as f64 / total_nodes as f64 * 100.0
+        } else {
+            0.0
+        };
+
         eprintln!("✅ GC Pipeline complete! 100% Rust 🦀");
-        eprintln!("  📊 Phase 1 (Export): Rust 🦀");
-        eprintln!("  📊 Phase 2 (BFS): Rust 🦀");
-        eprintln!("  📊 Phase 3 (Prune): Rust 🦀");
-        eprintln!("  📊 Phase 4 (Validate): Rust 🦀");
+        eprintln!("  📊 Phase 1 (Export): {:.1} min", phase1_elapsed / 60.0);
+        eprintln!("  📊 Phase 2 (BFS): {:.1} min", phase2_elapsed / 60.0);
+        eprintln!("  📊 Phase 3 (Prune): {:.1} min", phase3_elapsed / 60.0);
+        eprintln!("  📊 Phase 4 (Validate): {:.1} min", phase4_elapsed / 60.0);
+        eprintln!("  💾 Nodes: {} → {} ({} deleted, {:.1}% removed)",
+                  total_nodes,
+                  result.nodes_copied,
+                  result.nodes_deleted,
+                  pct_removed);
     }
 
     Ok(())
