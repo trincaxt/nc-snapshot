@@ -102,7 +102,7 @@ pub fn prune_states(
     let start = Instant::now();
 
     if !json {
-        eprintln!("🧹 Prune states/ iniciado (Rust 🦀)");
+        eprintln!("🧹 Prune states/ iniciado 🦀");
         eprintln!("   Source  : {}", source_path.display());
         eprintln!("   Dest    : {}", dest_path.display());
         eprintln!("   Live keys: {}", live_keys_file.display());

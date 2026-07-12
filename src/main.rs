@@ -184,7 +184,7 @@ fn fetch_metadata_hybrid(
 /// Creates a consistent RocksDB checkpoint using secondary mode (100% Rust 🦀).
 fn checkpoint_db(rel_path: &str, src: &Path, dst: &Path, json: bool) -> anyhow::Result<PathBuf> {
     if !json {
-        eprintln!("    🦀 {} via secondary mode (Rust)...", rel_path);
+        eprintln!("    🦀 {} via secondary mode 🦀...", rel_path);
     }
     
     checkpoint_secondary::create_checkpoint_secondary(src, dst)?;
@@ -198,7 +198,7 @@ fn get_state_root_from_checkpoint_hybrid(
     json: bool,
 ) -> anyhow::Result<(String, i64)> {
     if !json {
-        eprintln!("  🦀 Reading state root from checkpoint (Rust)...");
+        eprintln!("  🦀 Reading state root from checkpoint 🦀...");
     }
 
     let tip = chain_reader::read_state_root_from_checkpoint(
@@ -353,7 +353,7 @@ fn generate_metadata_rust(
     Ok((metadata_json, partition_filename, latest_epoch))
 }
 
-/// Executa o GC Pipeline completo — 100% Rust 🦀.
+/// Executa o GC Pipeline completo 🦀.
 fn run_gc_pipeline(
     source_states: &Path,
     dest_states: &Path,
@@ -372,14 +372,14 @@ fn run_gc_pipeline(
         eprintln!("  Source: {}", source_states.display());
         eprintln!("  Dest : {}", dest_states.display());
         eprintln!("  Root : {}...", &root_hash_hex[..16]);
-        eprintln!("  ⏳ Running GC Pipeline 100% Rust 🦀...");
+        eprintln!("  ⏳ Running GC Pipeline 🦀...");
         eprintln!();
     }
 
     // ── Phase 1: Export (RUST) ──────────────────────────────────────
     let phase1_start = Instant::now();
     if !json {
-        eprintln!("📤 Phase 1: Exporting states/ (Rust 🦀)...");
+        eprintln!("📤 Phase 1: Exporting states/ 🦀...");
     }
 
     let export_result = exporter::export_states(source_states, &export_file)?;
@@ -395,7 +395,7 @@ fn run_gc_pipeline(
     // ── Phase 2: BFS (RUST) ──────────────────────────────────────
     let phase2_start = Instant::now();
     if !json {
-        eprintln!("🌳 Phase 2: BFS (Rust 🦀 - SCAN SEQUENCIAL, ~500 MB RAM)...");
+        eprintln!("🌳 Phase 2: BFS ( 🦀 - SCAN SEQUENCIAL - 🦀 )...");
     }
 
     let root_bytes = hex_to_hash32(root_hash_hex)?;
@@ -411,7 +411,7 @@ fn run_gc_pipeline(
     // ── Phase 3: Prune (RUST) ──────────────────────────────────────
     let phase3_start = Instant::now();
     if !json {
-        eprintln!("🗑️ Phase 3: Prune (Rust 🦀 - RÁPIDO!)...");
+        eprintln!("🗑️ Phase 3: Prune  🦀 ...");
     }
 
     let result = pruner::prune_states(
@@ -432,7 +432,7 @@ fn run_gc_pipeline(
     // ── Phase 4: Validate (RUST 🦀) ─────────────────────────────────
     let phase4_start = Instant::now();
     if !json {
-        eprintln!("🔍 Phase 4: Validating pruned states/ (Rust 🦀)...");
+        eprintln!("🔍 Phase 4: Validating pruned states/ 🦀...");
     }
 
     chain_reader::validate_states(dest_states)
@@ -456,7 +456,7 @@ fn run_gc_pipeline(
             0.0
         };
 
-        eprintln!("✅ GC Pipeline complete! 100% Rust 🦀");
+        eprintln!("✅ GC Pipeline complete! 🦀");
         eprintln!("  📊 Phase 1 (Export): {:.1} min", phase1_elapsed / 60.0);
         eprintln!("  📊 Phase 2 (BFS): {:.1} min", phase2_elapsed / 60.0);
         eprintln!("  📊 Phase 3 (Prune): {:.1} min", phase3_elapsed / 60.0);
@@ -577,7 +577,7 @@ fn main() {
 
             if !json {
                 eprintln!("╔══════════════════════════════════════════╗");
-                eprintln!("║   ⚡ NC Blockchain Snapshot Tool         ║");
+                eprintln!("║   ⚡ NC Blockchain Snapshot Tool ⚡       ║");
                 eprintln!("╚══════════════════════════════════════════╝");
                 eprintln!("  Source  : {}", source_path.display());
                 eprintln!("  Output  : {}", final_output.display());
@@ -624,7 +624,7 @@ fn main() {
                 let _ = std::fs::create_dir_all(&checkpoint_base);
 
                 if !json {
-                    eprintln!("📸 Creating live checkpoint via secondary mode (Rust 🦀)...");
+                    eprintln!("📸 Creating live checkpoint via secondary mode 🦀...");
                     eprintln!("   Using RocksDB secondary mode for consistent checkpoints");
                     eprintln!("   Expected time: ~seconds");
                 }

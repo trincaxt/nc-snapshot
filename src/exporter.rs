@@ -24,7 +24,7 @@ pub struct ExportResult {
 pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportResult> {
     let start = Instant::now();
 
-    eprintln!("📤 Exporting states/ (Rust 🦀) ...");
+    eprintln!("📤 Exporting states/ 🦀 ...");
     eprintln!("   Source: {}", states_path.display());
     eprintln!("   Dest:   {}", output_file.display());
 
