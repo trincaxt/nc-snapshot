@@ -523,7 +523,7 @@ fn main() {
             // ── OFFLINE: fetch_metadata ANTES do checkpoint (source sem LOCK) ──
             // ── LIVE: fetch_metadata DEPOIS do checkpoint (no checkpoint, sem LOCK) ──
             let mut bridge_res = None;
-            if !live {
+            if !live && mode_enum == SnapshotMode::Partition {
                 if let Some(ref apv_val) = apv {
                     if !json {
                         eprintln!("🚀 Fetching blockchain metadata...");
@@ -890,7 +890,8 @@ fn main() {
                 }
 
                 if checkpoint_ok {
-                    // ── LIVE: fetch_metadata DEPOIS do checkpoint (no checkpoint, sem LOCK!) ──
+                    // ── LIVE: fetch_metadata só no Partition mode ──
+                    if mode_enum == SnapshotMode::Partition {
                     if let Some(ref apv_val) = apv {
                         if bridge_res.is_none() {
                             let metadata_output_dir = output_dir.as_ref().map(|p| p.as_path()).unwrap_or_else(|| Path::new("."));
@@ -899,17 +900,11 @@ fn main() {
                                     if !res.success {
                                         eprintln!("❌ Bridge error: {:?}", res.error);
                                     } else {
-                                        if mode_enum == SnapshotMode::Partition && epoch_limit.is_none() {
+                                        if epoch_limit.is_none() {
                                             epoch_limit = Some(res.current_metadata_block_epoch as u64);
                                         }
-                                        // Atualiza final_output com o nome correto do bridge
-                                        if mode_enum == SnapshotMode::Partition {
-                                            let parent = final_output.parent().unwrap_or(Path::new(".")).to_path_buf();
-                                            final_output = parent.join(format!("{}.tar.zst", res.partition_base_filename));
-                                        } else {
-                                            let parent = final_output.parent().unwrap_or(Path::new(".")).to_path_buf();
-                                            final_output = parent.join("state_latest.tar.zst");
-                                        }
+                                        let parent = final_output.parent().unwrap_or(Path::new(".")).to_path_buf();
+                                        final_output = parent.join(format!("{}.tar.zst", res.partition_base_filename));
                                         bridge_res = Some(res);
                                         if !json {
                                             eprintln!("  ✅ Metadata fetched, output: {}", final_output.display());
@@ -921,6 +916,7 @@ fn main() {
                                 }
                             }
                         }
+                    }
                     }
 
                     if prune && (mode_enum == SnapshotMode::State || mode_enum == SnapshotMode::Full || mode_enum == SnapshotMode::Partition) {

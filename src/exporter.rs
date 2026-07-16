@@ -1,8 +1,9 @@
 //! Phase 1: Export all KV pairs from states/ RocksDB to binary file.
 //! Format: [key:32b][val_len:4b little-endian][val:Nb] repeated
 //!
-//! Estratégia: Usar rocksdb::DB::iterator() para scan sequencial
-//! com buffer de 128MB e escrita em chunk único.
+//! Otimizações aplicadas:
+//! - Escrita direta no BufWriter sem buffer intermediário (zero alloc por entry)
+//! - CHUNK_SIZE removido (dead code, BufWriter 128MB já faz o batching)
 
 use anyhow::{Context, Result};
 use rocksdb::{DB, IteratorMode, Options, ReadOptions};
@@ -45,14 +46,11 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
     .with_context(|| format!("Failed to create export file: {}", output_file.display()))?;
     let mut writer = BufWriter::with_capacity(128 * 1024 * 1024, file);
 
-    // ── BUFFER REUTILIZÁVEL PARA UMA ÚNICA ESCRITA ──────────────────
-    let mut buf = Vec::with_capacity(32 + 4 + 1024); // 32 bytes key + 4 bytes len + 1KB value
-
     let mut count = 0u64;
     let mut last_log = Instant::now();
 
     // ── Scan sequencial com readahead grande + sem checksum ──────────
-    // (CPU-bound no 2400G: 32MB prefetch, NVMe feliz)
+    // Nota: set_use_direct_reads não disponível nas rust-rocksdb 0.24 bindings
     let mut read_opts = ReadOptions::default();
     read_opts.set_readahead_size(32 * 1024 * 1024); // 32MB prefetch
     read_opts.set_verify_checksums(false);          // C# --gc-validate revalida depois
@@ -67,13 +65,11 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
             continue; // Pular keys que não são hashes (metadados)
         }
 
-        // ── ESCREVER TUDO DE UMA VEZ (ZERO SYSCALLS DESNECESSÁRIOS) ──
-        buf.clear();
-        buf.extend_from_slice(&key);
-        buf.extend_from_slice(&(value.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&value);
-        writer.write_all(&buf)
+        // ── ESCREVER DIRETO NO BUFWRITER (ZERO ALLOC, ZERO CÓPIA EXTRA) ──
+        writer.write_all(&key)
         .with_context(|| format!("Failed to write entry {}", count))?;
+        writer.write_all(&(value.len() as u32).to_le_bytes())?;
+        writer.write_all(&value)?;
 
         count += 1;
 

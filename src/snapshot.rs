@@ -553,17 +553,7 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
         config.mode.to_string().as_str(),
     )?;
 
-    // Write Metadata if available (for State/Full mode)
-    if let Some(res) = bridge_res {
-        let meta_dir = config.output.parent().unwrap_or(Path::new(".")).join("metadata");
-        let _ = fs::create_dir_all(&meta_dir);
-        let meta_name = "state_latest";
-        let meta_path = meta_dir.join(format!("{}.json", meta_name));
-        let _ = fs::write(&meta_path, &res.stringfy_metadata);
-        if !config.json {
-            eprintln!("   Metadata   : {}", meta_path.display());
-        }
-    }
+    // Metadata only for Partition mode (handled above)
 
     Ok(result)
 }
