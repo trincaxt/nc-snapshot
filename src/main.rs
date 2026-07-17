@@ -359,8 +359,7 @@ fn run_gc_pipeline(
         eprintln!("  Source: {}", source_states.display());
         eprintln!("  Dest : {}", dest_states.display());
         eprintln!("  Root : {}...", &root_hash_hex[..16]);
-        eprintln!("  ⏳ Running GC Pipeline (Export Rust + BFS Rust + Prune Rust + Validate C#)...");
-        eprintln!("  🚀 TUDO EM RUST MENOS VALIDAÇÃO!");
+        eprintln!("  ⏳ Running GC Pipeline (Export + BFS + Prune + Validate )...");
         eprintln!();
     }
 
