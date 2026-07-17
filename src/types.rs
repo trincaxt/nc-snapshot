@@ -113,6 +113,9 @@ pub struct BridgeResult {
 
 /// Block metadata para geração do JSON de metadata (Rust puro).
 /// Struct espelha o formato JSON do bridge C# original.
+///
+/// Nota: `tx_hash` é `Option` porque o C# só inclui TxHash se não for nulo.
+/// Quando `None`, o campo é omitido do JSON serializado.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockMetadata {
@@ -128,8 +131,9 @@ pub struct BlockMetadata {
     /// Previous block hash (hex)
     pub previous_hash: String,
     
-    /// Transaction root hash (hex)
-    pub tx_hash: String,
+    /// Transaction root hash (hex) — opcional, omitido se None (C# TryGetValue)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
     
     /// Application Protocol Version
     #[serde(rename = "APV")]

@@ -2,11 +2,15 @@
 //! Format: [key:32b][val_len:4b little-endian][val:Nb] repeated
 //!
 //! Otimizações aplicadas:
-//! - Escrita direta no BufWriter sem buffer intermediário (zero alloc por entry)
-//! - CHUNK_SIZE removido (dead code, BufWriter 128MB já faz o batching)
+//! - raw_iterator_opt: key()/value() devolvem &[u8] emprestados (zero alloc por entry)
+//! - fill_cache(false): scan one-pass, não polui block cache
+//! - set_advise_random_on_open(false): reabilita readahead do SO para scan sequencial
+//! - Logging com contador a cada 1M entries (evita clock_gettime por iteração)
+//! - Escrita direta no BufWriter sem buffer intermediário (zero alloc extra)
+//! - BufWriter 128MB para batching de escrita
 
 use anyhow::{Context, Result};
-use rocksdb::{DB, IteratorMode, Options, ReadOptions};
+use rocksdb::{DB, Options, ReadOptions};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -32,6 +36,9 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
     // ── Abrir RocksDB em modo read-only ──────────────────────────────
     let mut opts = Options::default();
     opts.create_if_missing(false);
+    // Scan 100% sequencial: reabilita readahead do kernel
+    // (default true = FADV_RANDOM, desliga readahead do SO)
+    opts.set_advise_random_on_open(false);
 
     // Usar format_version 5 para compatibilidade com Libplanet
     let mut block_opts = rocksdb::BlockBasedOptions::default();
@@ -49,41 +56,53 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
     let mut count = 0u64;
     let mut last_log = Instant::now();
 
-    // ── Scan sequencial com readahead grande + sem checksum ──────────
-    // Nota: set_use_direct_reads não disponível nas rust-rocksdb 0.24 bindings
+    // ── Raw iterator: ZERO alloc por entry ───────────────────────────
+    // iterator_opt() devolve (Box<[u8]>, Box<[u8]>) = 2 allocs + 2 frees por entry.
+    // raw_iterator_opt() devolve key()/value() como &[u8] emprestados do buffer interno.
+    //
+    // Nota: set_use_direct_reads não existe nas rust-rocksdb 0.24 bindings
+    // (a C API rocksdb_readoptions_set_use_direct_reads não foi envolvida).
     let mut read_opts = ReadOptions::default();
     read_opts.set_readahead_size(32 * 1024 * 1024); // 32MB prefetch
     read_opts.set_verify_checksums(false);          // C# --gc-validate revalida depois
+    read_opts.fill_cache(false);                     // One-pass: não poluir block cache
 
-    let iter = db.iterator_opt(IteratorMode::Start, read_opts);
+    let mut iter = db.raw_iterator_opt(read_opts);
+    iter.seek_to_first();
 
-    for item in iter {
-        let (key, value) = item
-        .with_context(|| format!("Failed to read entry at offset {}", count))?;
+    while iter.valid() {
+        let key = iter.key().expect("valid() true implies key exists");
+        let value = iter.value().expect("valid() true implies value exists");
 
-        if key.len() != 32 {
-            continue; // Pular keys que não são hashes (metadados)
+        if key.len() == 32 {
+            // ── ESCREVER DIRETO NO BUFWRITER (ZERO ALLOC EXTRA) ──
+            writer.write_all(key)
+            .with_context(|| format!("Failed to write entry {}", count))?;
+            writer.write_all(&(value.len() as u32).to_le_bytes())?;
+            writer.write_all(value)?;
+            count += 1;
+
+            // Log a cada ~1M entries com bitwise AND (mais rápido que módulo)
+            // Só lê o relógio a cada 1M entries (evita clock_gettime por iteração)
+            if count & 0xFFFFF == 0 {
+                if last_log.elapsed().as_secs() >= 5 {
+                    let elapsed = start.elapsed().as_secs_f64();
+                    let rate = count as f64 / elapsed;
+                    eprintln!("   Exported {}M entries ({:.1}K/s)...",
+                              count / 1_000_000,
+                              rate / 1000.0
+                    );
+                    last_log = Instant::now();
+                }
+            }
         }
 
-        // ── ESCREVER DIRETO NO BUFWRITER (ZERO ALLOC, ZERO CÓPIA EXTRA) ──
-        writer.write_all(&key)
-        .with_context(|| format!("Failed to write entry {}", count))?;
-        writer.write_all(&(value.len() as u32).to_le_bytes())?;
-        writer.write_all(&value)?;
-
-        count += 1;
-
-        // Log a cada 10M entries ou a cada 5 segundos
-        if count % 10_000_000 == 0 || last_log.elapsed().as_secs() >= 5 {
-            let elapsed = start.elapsed().as_secs_f64();
-            let rate = count as f64 / elapsed;
-            eprintln!("   Exported {}M entries ({:.1}K/s)...",
-                      count / 1_000_000,
-                      rate / 1000.0
-            );
-            last_log = Instant::now();
-        }
+        iter.next();
     }
+
+    // Verificar se o iterador encontrou algum erro (checksum, I/O, etc.)
+    iter.status().map_err(anyhow::Error::msg)
+    .context("Iterator failed mid-scan")?;
 
     writer.flush()?;
 
@@ -97,7 +116,7 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
 
     Ok(ExportResult {
         total_entries: count,
-       file_size_gb: file_size,
-       elapsed_secs: elapsed,
+        file_size_gb: file_size,
+        elapsed_secs: elapsed,
     })
 }

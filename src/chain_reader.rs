@@ -32,13 +32,17 @@ pub struct ChainTip {
 }
 
 /// Informações completas do BlockHeader (para metadata generation).
+///
+/// Nota: `tx_hash` é `Option` porque o C# BlockMarshaler só inclui TxHash
+/// no dicionário Bencodex se `metadata.TxHash != null`:
+///   if (metadata.TxHash is { } th) dict = dict.Add(TxHashKey, th.Bencoded);
 #[derive(Debug)]
 pub struct BlockHeaderInfo {
     pub index: i64,
     pub timestamp: String,
     pub state_root_hash: [u8; 32],
     pub previous_hash: [u8; 32],
-    pub tx_hash: [u8; 32],
+    pub tx_hash: Option<[u8; 32]>,  // Opcional: C# só inclui se != null
     pub block_hash: [u8; 32],
 }
 
@@ -264,17 +268,23 @@ fn extract_header_info(
     }
     let previous_hash: [u8; 32] = prev_hash_bytes[..32].try_into().expect("32 bytes");
 
-    // TxHash: 0x78 ('x')
+    // TxHash: 0x78 ('x') — OPCIONAL (C# BlockMarshaler usa TryGetValue)
+    // Só incluído se metadata.TxHash não for nulo:
+    //   if (metadata.TxHash is { } th) dict = dict.Add(TxHashKey, th.Bencoded);
+    // Tratamos silenciosamente como None (sem warning) — é um caso normal
     let tx_hash_key = BencodexKey::Binary(std::borrow::Cow::Borrowed(&[0x78]));
-    let tx_hash_bytes = match header.get(&tx_hash_key)
-        .with_context(|| "Campo 'txHash' (0x78) não encontrado")? {
-        BencodexValue::Binary(b) => b.as_ref(),
-        _ => anyhow::bail!("TxHash (0x78) não é binary"),
+    let tx_hash: Option<[u8; 32]> = match header.get(&tx_hash_key) {
+        Some(BencodexValue::Binary(b)) if b.len() == 32 => {
+            Some(b[..32].try_into().expect("32 bytes"))
+        }
+        Some(BencodexValue::Binary(b)) => {
+            anyhow::bail!("TxHash tem tamanho inesperado: {}b", b.len());
+        }
+        Some(_) => {
+            anyhow::bail!("TxHash (0x78) não é binary");
+        }
+        None => None, // Silencioso: TxHash é opcional no C# (TryGetValue)
     };
-    if tx_hash_bytes.len() != 32 {
-        anyhow::bail!("TxHash tem tamanho inesperado: {}b", tx_hash_bytes.len());
-    }
-    let tx_hash: [u8; 32] = tx_hash_bytes[..32].try_into().expect("32 bytes");
 
     Ok(BlockHeaderInfo {
         index,

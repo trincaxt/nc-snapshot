@@ -162,10 +162,6 @@ fn fetch_metadata_hybrid(
     let (metadata_json, partition_filename, latest_epoch) = 
         generate_metadata_rust(source, apv, block_before, output_dir, json_output)?;
 
-    if !json_output {
-        eprintln!("  ✅ Rust metadata complete!");
-    }
-
     let current_metadata_block_epoch = get_metadata_epoch(&output_dir.join("metadata"), "BlockEpoch");
     let previous_metadata_block_epoch = get_metadata_epoch(&output_dir.join("metadata"), "PreviousBlockEpoch");
 
@@ -198,7 +194,7 @@ fn get_state_root_from_checkpoint_hybrid(
     json: bool,
 ) -> anyhow::Result<(String, i64)> {
     if !json {
-        eprintln!("  🦀 Reading state root from checkpoint 🦀...");
+        eprintln!("  Getting state root from checkpoint...");
     }
 
     let tip = chain_reader::read_state_root_from_checkpoint(
@@ -208,8 +204,8 @@ fn get_state_root_from_checkpoint_hybrid(
 
     let srh = hex::encode(tip.state_root_hash);
     if !json {
-        eprintln!("  ✅ Rust: StateRoot {}...", &srh[..16]);
-        eprintln!("  ✅ Rust: Block #{}", tip.block_index);
+        eprintln!("  StateRoot: {}...", &srh[..16]);
+        eprintln!("  Block #{}", tip.block_index);
     }
 
     Ok((srh, tip.block_index))
@@ -288,10 +284,6 @@ fn generate_metadata_rust(
 ) -> anyhow::Result<(String, String, i32)> {
     use anyhow::Context;
 
-    if !json_output {
-        eprintln!("  🦀 Trying Rust metadata generator...");
-    }
-
     // 1. Lê informações completas do header
     let header = chain_reader::read_block_header_from_checkpoint(checkpoint_base, block_before as u64)?;
 
@@ -326,7 +318,7 @@ fn generate_metadata_rust(
         timestamp: header.timestamp.clone(),
         state_root_hash: hex::encode(header.state_root_hash),
         previous_hash: hex::encode(header.previous_hash),
-        tx_hash: hex::encode(header.tx_hash),
+        tx_hash: header.tx_hash.map(|h| hex::encode(h)),
         apv: apv.to_string(),
         block_epoch,
         tx_epoch,
@@ -344,11 +336,6 @@ fn generate_metadata_rust(
         current_metadata_tx_epoch,
         latest_epoch,
     );
-
-    if !json_output {
-        eprintln!("  ✅ Rust metadata generated!");
-        eprintln!("     Block #{}, epoch {}", header.index, latest_epoch);
-    }
 
     Ok((metadata_json, partition_filename, latest_epoch))
 }
@@ -372,7 +359,8 @@ fn run_gc_pipeline(
         eprintln!("  Source: {}", source_states.display());
         eprintln!("  Dest : {}", dest_states.display());
         eprintln!("  Root : {}...", &root_hash_hex[..16]);
-        eprintln!("  ⏳ Running GC Pipeline 🦀...");
+        eprintln!("  ⏳ Running GC Pipeline (Export Rust + BFS Rust + Prune Rust + Validate C#)...");
+        eprintln!("  🚀 TUDO EM RUST MENOS VALIDAÇÃO!");
         eprintln!();
     }
 
