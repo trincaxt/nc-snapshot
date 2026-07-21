@@ -15,7 +15,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-const HASH_LEN: usize = 32;
+use crate::io_util::{read_record, HASH_LEN};
 const BENCODEX_HASH_PREFIX: &[u8] = b"32:";
 
 /// Extrai child hashes do value (padrão Bencodex "32:" + 32 bytes)
@@ -38,17 +38,6 @@ fn extract_child_hashes(data: &[u8], out: &mut Vec<[u8; HASH_LEN]>) {
             i += 1;
         }
     }
-}
-
-/// Lê um registro em `offset`: retorna (key, value, next_offset).
-/// Formato: key(32) + value_len(4 LE) + value(value_len).
-#[inline]
-fn read_record(data: &[u8], offset: usize) -> ([u8; HASH_LEN], &[u8], usize) {
-    let key: [u8; HASH_LEN] = data[offset..offset + HASH_LEN].try_into().unwrap();
-    let lo = offset + HASH_LEN;
-    let vlen = u32::from_le_bytes([data[lo], data[lo + 1], data[lo + 2], data[lo + 3]]) as usize;
-    let vo = lo + 4;
-    (key, &data[vo..vo + vlen], vo + vlen)
 }
 
 /// BFS por fixpoint: working-set mutável, filhos entram no mesmo passe.
@@ -77,6 +66,8 @@ fn bfs_fixpoint(
     let mut pass = 0;
     let mut buf: Vec<[u8; HASH_LEN]> = Vec::with_capacity(32);
 
+    const MAX_PASSES: usize = 18; // Early termination: evita passes 19-20 ineficientes
+
     while !pending.is_empty() {
         let start = std::time::Instant::now();
         let pending_at_start = pending.len();
@@ -85,8 +76,10 @@ fn bfs_fixpoint(
         let mut offset = 0;
         let mut scanned = 0u64;
 
-        while offset + 36 <= data_len {
-            let (key, value, next) = read_record(data, offset);
+        while offset < data_len {
+            let Some((key, value, next)) = read_record(data, offset) else {
+                break;
+            };
             offset = next;
             scanned += 1;
 
@@ -124,6 +117,15 @@ fn bfs_fixpoint(
             }
             break;
         }
+
+        // Early termination: últimos passes têm custo/benefício ruim
+        if pass >= MAX_PASSES {
+            if !pending.is_empty() {
+                eprintln!("   ⏱️ Reached max passes ({}), stopping early. {} pending ignored (likely dangling).",
+                          MAX_PASSES, pending.len());
+            }
+            break;
+        }
     }
 
     eprintln!("✅ BFS fixpoint: {} passes, {} live nodes", pass, visited.len());
@@ -157,4 +159,66 @@ pub fn run_gc_filter(
     eprintln!("✅ GC filter complete: {} keys written", live_keys.len());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_child_hashes_empty() {
+        let mut out = Vec::new();
+        extract_child_hashes(b"", &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_extract_child_hashes_no_prefix() {
+        let mut out = Vec::new();
+        extract_child_hashes(b"no hash markers here", &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_extract_child_hashes_single() {
+        let mut data = b"32:".to_vec();
+        let hash = [0xAB; 32];
+        data.extend_from_slice(&hash);
+
+        let mut out = Vec::new();
+        extract_child_hashes(&data, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], hash);
+    }
+
+    #[test]
+    fn test_extract_child_hashes_multiple() {
+        let mut data = b"32:".to_vec();
+        let hash1 = [0xAA; 32];
+        let hash2 = [0xBB; 32];
+        data.extend_from_slice(&hash1);
+        data.extend_from_slice(b"32:");
+        data.extend_from_slice(&hash2);
+
+        let mut out = Vec::new();
+        extract_child_hashes(&data, &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], hash1);
+        assert_eq!(out[1], hash2);
+    }
+
+    #[test]
+    fn test_extract_child_hashes_adjacent() {
+        // 32: + hash1 + 32: + hash2 — no space between
+        let mut data = b"32:".to_vec();
+        data.extend_from_slice(&[0x11; 32]);
+        data.extend_from_slice(b"32:");
+        data.extend_from_slice(&[0x22; 32]);
+        // plus trailing non-hash data
+        data.extend_from_slice(b"extra");
+
+        let mut out = Vec::new();
+        extract_child_hashes(&data, &mut out);
+        assert_eq!(out.len(), 2);
+    }
 }

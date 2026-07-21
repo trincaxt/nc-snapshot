@@ -18,6 +18,7 @@ use std::time::Instant;
 
 pub struct ExportResult {
     pub total_entries: u64,
+    #[allow(dead_code)]
     pub file_size_gb: f64,
     pub elapsed_secs: f64,
 }

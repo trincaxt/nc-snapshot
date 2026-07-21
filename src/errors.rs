@@ -3,6 +3,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum SnapshotError {
+    #[allow(dead_code)]
     #[error("Node appears to be running — lock held on: {lock_path}")]
     NodeRunning { lock_path: PathBuf },
 
@@ -15,6 +16,7 @@ pub enum SnapshotError {
     #[error("Compression error: {0}")]
     Compression(#[from] std::io::Error),
 
+    #[allow(dead_code)]
     #[error("Checksum mismatch for {path}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         path: String,
@@ -22,12 +24,14 @@ pub enum SnapshotError {
         actual: String,
     },
 
+    #[allow(dead_code)]
     #[error("Manifest not found in archive")]
     ManifestNotFound,
 
     #[error("Source directory does not exist: {0}")]
     SourceNotFound(PathBuf),
 
+    #[allow(dead_code)]
     #[error("Archive file does not exist: {0}")]
     ArchiveNotFound(PathBuf),
 }

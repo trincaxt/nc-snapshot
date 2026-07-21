@@ -234,6 +234,18 @@ Only then is the snapshot considered valid.
 
 ---
 
+## 🧪 Testing
+
+See **[TESTING.md](./TESTING.md)** for the full test strategy.
+
+- **99 unit + integration tests**, zero external dependencies
+- Tests cover parsers, Bencodex decoding, epoch filtering, metadata, live-keys
+- The chain reader is tested against a synthetic RocksDB fixture (3 blocks)
+- No test ever touches `~/9c-blockchain`
+- `cargo test` completes in under a second
+
+---
+
 ## 🚦 Current Status
 
 | Component | Status |

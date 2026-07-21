@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 use rocksdb::{DB, Options, checkpoint::Checkpoint};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 /// Creates a consistent checkpoint of a RocksDB using secondary mode.
@@ -65,7 +65,8 @@ pub fn create_checkpoint_secondary(
         // STEP 1: Open as secondary
         // ═══════════════════════════════════════════════════════════════
         let mut opts = Options::default();
-        opts.set_skip_checking_sst_file_sizes_on_db_open(true);
+        // Note: set_skip_checking_sst_file_sizes_on_db_open is deprecated in RocksDB >= 10.5
+        // and the option is now ignored (checking done with thread pool automatically)
         opts.set_paranoid_checks(false);
 
         let db = DB::open_as_secondary(&opts, source_db, &temp_secondary)
@@ -118,7 +119,7 @@ pub fn create_checkpoint_secondary(
 fn validate_checkpoint_light(path: &Path) -> Result<()> {
     let mut opts = Options::default();
     opts.create_if_missing(false);
-    opts.set_skip_checking_sst_file_sizes_on_db_open(true);
+    // Note: set_skip_checking_sst_file_sizes_on_db_open is deprecated in RocksDB >= 10.5
     opts.set_paranoid_checks(false);
 
     // Use same BlockBasedOptions as exporter.rs for states/ compatibility
@@ -190,9 +191,6 @@ pub fn checkpoint_batch_epochs(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
     #[test]
     #[ignore] // Requires a real RocksDB to test
     fn test_create_checkpoint_secondary() {

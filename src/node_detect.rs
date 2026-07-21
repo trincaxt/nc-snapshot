@@ -37,12 +37,12 @@ fn is_file_locked(path: &Path) -> bool {
     };
 
     let fd = file.as_raw_fd();
-    let result = unsafe { libc_flock(fd, libc_LOCK_EX | libc_LOCK_NB) };
+    let result = unsafe { libc_flock(fd, LIBC_LOCK_EX | LIBC_LOCK_NB) };
 
     if result == 0 {
         // We got the lock — release it immediately
         unsafe {
-            libc_flock(fd, libc_LOCK_UN);
+            libc_flock(fd, LIBC_LOCK_UN);
         }
         false
     } else {
@@ -52,15 +52,13 @@ fn is_file_locked(path: &Path) -> bool {
 }
 
 // Inline libc constants to avoid adding libc as a dependency
-const libc_LOCK_EX: i32 = 2;
-const libc_LOCK_NB: i32 = 4;
-const libc_LOCK_UN: i32 = 8;
+const LIBC_LOCK_EX: i32 = 2;
+const LIBC_LOCK_NB: i32 = 4;
+const LIBC_LOCK_UN: i32 = 8;
 
 unsafe fn libc_flock(fd: i32, operation: i32) -> i32 {
-    unsafe {
-        extern "C" {
-            fn flock(fd: i32, operation: i32) -> i32;
-        }
-        flock(fd, operation)
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
     }
+    flock(fd, operation)
 }

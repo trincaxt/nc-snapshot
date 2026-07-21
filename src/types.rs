@@ -45,11 +45,14 @@ pub struct SnapshotConfig {
     pub include: Vec<String>,
     pub mode: SnapshotMode,
     pub epoch_limit: Option<u64>,
+    #[allow(dead_code)]
     pub force: bool,
     pub json: bool,
     pub dry_run: bool,
     pub incremental: bool,
+    #[allow(dead_code)]
     pub apv: Option<String>,
+    #[allow(dead_code)]
     pub block_before: i32,
 }
 
@@ -104,6 +107,7 @@ pub struct BridgeResult {
     pub success: bool,
     pub error: Option<String>,
     pub partition_base_filename: String,
+    #[allow(dead_code)]
     pub state_base_filename: String,
     pub latest_epoch: i32,
     pub current_metadata_block_epoch: i32,
@@ -154,4 +158,54 @@ pub struct BlockMetadata {
     /// Previous tx epoch
     #[serde(rename = "PreviousTxEpoch")]
     pub previous_tx_epoch: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_str_state() {
+        let mode: SnapshotMode = "state".parse().unwrap();
+        assert!(matches!(mode, SnapshotMode::State));
+    }
+
+    #[test]
+    fn test_from_str_partition() {
+        let mode: SnapshotMode = "partition".parse().unwrap();
+        assert!(matches!(mode, SnapshotMode::Partition));
+    }
+
+    #[test]
+    fn test_from_str_full() {
+        let mode: SnapshotMode = "full".parse().unwrap();
+        assert!(matches!(mode, SnapshotMode::Full));
+    }
+
+    #[test]
+    fn test_from_str_invalid() {
+        let result: Result<SnapshotMode, _> = "invalid".parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_str_case_insensitive() {
+        let mode: SnapshotMode = "State".parse().unwrap();
+        assert!(matches!(mode, SnapshotMode::State));
+    }
+
+    #[test]
+    fn test_display_state() {
+        assert_eq!(SnapshotMode::State.to_string(), "state");
+    }
+
+    #[test]
+    fn test_display_partition() {
+        assert_eq!(SnapshotMode::Partition.to_string(), "partition");
+    }
+
+    #[test]
+    fn test_display_full() {
+        assert_eq!(SnapshotMode::Full.to_string(), "full");
+    }
 }

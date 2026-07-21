@@ -26,6 +26,14 @@ rustc-hash = "2"
 memchr = "2.7"
 bencodex = { path = "bencodex/bencodex-rs", package = "bencodex-rs" }
 
+[lib]
+name = "nc_snapshot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nc-snapshot"
+path = "src/main.rs"
+
 [profile.release]
 opt-level = 3
 lto = true

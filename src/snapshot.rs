@@ -30,6 +30,7 @@ const PARTITION_DIRS: &[&str] = &["block", "tx"];
 const PARTITION_EXCLUDE: &[&str] = &["blockindex", "txindex"];
 
 /// Get the list of directories to include based on snapshot mode.
+#[allow(dead_code)]
 fn get_mode_dirs(mode: &SnapshotMode) -> Option<Vec<String>> {
     match mode {
         SnapshotMode::State => Some(STATE_DIRS.iter().map(|s| s.to_string()).collect()),
@@ -39,6 +40,7 @@ fn get_mode_dirs(mode: &SnapshotMode) -> Option<Vec<String>> {
 }
 
 /// Get extra excludes based on snapshot mode.
+#[allow(dead_code)]
 fn get_mode_excludes(mode: &SnapshotMode) -> Vec<String> {
     match mode {
         SnapshotMode::Partition => PARTITION_EXCLUDE.iter().map(|s| s.to_string()).collect(),
@@ -573,4 +575,174 @@ fn chrono_now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}", duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_epoch_valid() {
+        assert_eq!(parse_epoch("epoch20536"), Some(20536));
+        assert_eq!(parse_epoch("epoch0"), Some(0));
+        assert_eq!(parse_epoch("epoch999999"), Some(999999));
+    }
+
+    #[test]
+    fn test_parse_epoch_edge_cases() {
+        assert_eq!(parse_epoch("epoch"), None);
+        assert_eq!(parse_epoch("epoc"), None);
+        assert_eq!(parse_epoch(""), None);
+        assert_eq!(parse_epoch("20536"), None);
+        assert_eq!(parse_epoch("epoch12a34"), None); // parse error
+    }
+
+    #[test]
+    fn test_get_epoch_limit_same_epoch() {
+        // latest == current_metadata == previous_metadata
+        assert_eq!(get_epoch_limit_from_metadata(100, 100, 100), 99);
+    }
+
+    #[test]
+    fn test_get_epoch_limit_previous_zero() {
+        // latest == current_metadata, previous == 0
+        assert_eq!(get_epoch_limit_from_metadata(100, 100, 0), 99);
+    }
+
+    #[test]
+    fn test_get_epoch_limit_previous_nonzero() {
+        // latest == current_metadata, previous > 0 and < latest
+        assert_eq!(get_epoch_limit_from_metadata(100, 100, 95), 95);
+    }
+
+    #[test]
+    fn test_get_epoch_limit_different() {
+        // latest != current_metadata
+        assert_eq!(get_epoch_limit_from_metadata(200, 100, 50), 100);
+    }
+
+    #[test]
+    fn test_get_epoch_limit_zero_edge() {
+        assert_eq!(get_epoch_limit_from_metadata(0, 0, 0), 0);
+        assert_eq!(get_epoch_limit_from_metadata(1, 0, 0), 0);
+    }
+
+    // ── collect_files() tests: partition mode core ─────────────
+
+    #[test]
+    fn test_collect_files_no_filter() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        fs::write(dir.path().join("b.txt"), "bb").unwrap();
+
+        let files = collect_files(dir.path(), None, &[], None);
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_collect_files_epoch_limit_below() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Cria block/epoch10 e block/epoch11, cada um com 1 arquivo
+        let e10 = dir.path().join("block/epoch10");
+        let e11 = dir.path().join("block/epoch11");
+        std::fs::create_dir_all(&e10).unwrap();
+        std::fs::create_dir_all(&e11).unwrap();
+        fs::write(e10.join("data.sst"), "x").unwrap();
+        fs::write(e11.join("data.sst"), "y").unwrap();
+
+        // epoch_limit=11: só epochs >= 11 entram
+        let exclude: Vec<String> = vec![];
+        let files = collect_files(dir.path(), None, &exclude, Some(11));
+
+        // Só epoch11 deve aparecer
+        let paths: Vec<_> = files.iter().map(|(p, _)| p.to_string_lossy().to_string()).collect();
+        assert_eq!(files.len(), 1, "esperado 1 arquivo (epoch11), got {}: {:?}", files.len(), paths);
+        assert!(paths[0].contains("epoch11"), "arquivo deve estar em epoch11, got: {}", paths[0]);
+        assert!(!paths[0].contains("epoch10"), "epoch10 não deve aparecer");
+    }
+
+    #[test]
+    fn test_collect_files_epoch_limit_all_above() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(dir.path().join("block/epoch5")).unwrap();
+        std::fs::create_dir_all(dir.path().join("block/epoch6")).unwrap();
+        fs::write(dir.path().join("block/epoch5/data.sst"), "x").unwrap();
+        fs::write(dir.path().join("block/epoch6/data.sst"), "y").unwrap();
+
+        // epoch_limit=0: todos entram
+        let exclude: Vec<String> = vec![];
+        let files = collect_files(dir.path(), None, &exclude, Some(0));
+        assert_eq!(files.len(), 2, "epoch_limit=0 deve incluir todos");
+    }
+
+    #[test]
+    fn test_collect_files_epoch_limit_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(dir.path().join("block/epoch10")).unwrap();
+        fs::write(dir.path().join("block/epoch10/data.sst"), "x").unwrap();
+
+        // Sem epoch_limit: inclui tudo
+        let exclude: Vec<String> = vec![];
+        let files = collect_files(dir.path(), None, &exclude, None);
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_files_with_exclude() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(dir.path().join("block/epoch10")).unwrap();
+        std::fs::create_dir_all(dir.path().join("tx/epoch10")).unwrap();
+        std::fs::create_dir_all(dir.path().join("chain")).unwrap();
+        fs::write(dir.path().join("block/epoch10/data.sst"), "x").unwrap();
+        fs::write(dir.path().join("tx/epoch10/data.sst"), "y").unwrap();
+        // Arquivo fora de epochs
+        fs::write(dir.path().join("chain/CURRENT"), "z").unwrap();
+
+        // Exclui "chain" (simula partition mode que exclui blockindex/txindex)
+        let exclude = vec!["chain".to_string()];
+        let files = collect_files(dir.path(), None, &exclude, None);
+        let paths: Vec<_> = files.iter().map(|(p, _)| p.to_string_lossy().to_string()).collect();
+
+        assert_eq!(files.len(), 2, "deve incluir block/epoch10 e tx/epoch10, got: {:?}", paths);
+        assert!(paths.iter().any(|p| p.contains("block/epoch10")));
+        assert!(paths.iter().any(|p| p.contains("tx/epoch10")));
+        assert!(!paths.iter().any(|p| p.contains("chain")));
+    }
+
+    #[test]
+    fn test_collect_files_with_include_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        std::fs::create_dir_all(dir.path().join("block/epoch10")).unwrap();
+        std::fs::create_dir_all(dir.path().join("states")).unwrap();
+        fs::write(dir.path().join("block/epoch10/data.sst"), "x").unwrap();
+        fs::write(dir.path().join("states/000001.sst"), "y").unwrap();
+
+        // Inclui só "block" (simula partition mode que pega block/ + tx/ separado)
+        let include = vec!["block".to_string()];
+        let files = collect_files(dir.path(), Some(&include), &[], None);
+
+        assert_eq!(files.len(), 1, "só block/ deve ser incluído");
+        assert!(files[0].0.to_string_lossy().contains("block/epoch10"));
+    }
+
+    #[test]
+    fn test_collect_files_deterministic_order() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        fs::write(dir.path().join("z.txt"), "z").unwrap();
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        fs::write(dir.path().join("m.txt"), "m").unwrap();
+
+        let files = collect_files(dir.path(), None, &[], None);
+        let names: Vec<_> = files.iter().map(|(p, _)| {
+            p.file_name().unwrap().to_string_lossy().to_string()
+        }).collect();
+
+        assert_eq!(names, vec!["a.txt", "m.txt", "z.txt"], "deve estar ordenado");
+    }
 }

@@ -8,17 +8,14 @@ mod pruner;
 mod exporter;
 mod chain_reader;
 mod checkpoint_secondary;
+mod io_util;
+mod metadata;
+mod pipeline;
 
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::Instant;
-use types::{BridgeResult, SnapshotConfig, SnapshotMode, BlockMetadata};
-use std::fs;
-
-
-const EPOCH_UNIT_SECONDS: i64 = 86400; // 24 horas
-
+use types::{SnapshotConfig, SnapshotMode};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -146,37 +143,6 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Gera metadata 100% Rust puro (sem C# bridge).
-fn fetch_metadata_hybrid(
-    source: &Path,
-    apv: &str,
-    block_before: i32,
-    _mode: &str,
-    output_dir: &Path,
-    json_output: bool,
-) -> anyhow::Result<BridgeResult> {
-    if !json_output {
-        eprintln!("🟢 Fetching metadata from checkpoint (no LOCK conflicts)...");
-    }
-
-    let (metadata_json, partition_filename, latest_epoch) = 
-        generate_metadata_rust(source, apv, block_before, output_dir, json_output)?;
-
-    let current_metadata_block_epoch = get_metadata_epoch(&output_dir.join("metadata"), "BlockEpoch");
-    let previous_metadata_block_epoch = get_metadata_epoch(&output_dir.join("metadata"), "PreviousBlockEpoch");
-
-    Ok(BridgeResult {
-        success: true,
-        error: None,
-        partition_base_filename: partition_filename,
-        state_base_filename: "state_latest".to_string(),
-        latest_epoch,
-        current_metadata_block_epoch,
-        previous_metadata_block_epoch,
-        stringfy_metadata: metadata_json,
-    })
-}
-
 /// Creates a consistent RocksDB checkpoint using secondary mode (100% Rust 🦀).
 fn checkpoint_db(rel_path: &str, src: &Path, dst: &Path, json: bool) -> anyhow::Result<PathBuf> {
     if !json {
@@ -209,265 +175,6 @@ fn get_state_root_from_checkpoint_hybrid(
     }
 
     Ok((srh, tip.block_index))
-}
-
-/// Lê o epoch do metadata anterior (metadata/*.json mais recente).
-/// Retorna 0 se não houver metadata anterior.
-fn get_metadata_epoch(metadata_dir: &Path, epoch_type: &str) -> i32 {
-    if !metadata_dir.exists() {
-        return 0;
-    }
-
-    match fs::read_dir(metadata_dir) {
-        Ok(entries) => {
-            let mut json_files: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s == "json")
-                        .unwrap_or(false)
-                })
-                .collect();
-
-            if json_files.is_empty() {
-                return 0;
-            }
-
-            // Ordena por mtime (mais recente primeiro)
-            json_files.sort_by(|a, b| {
-                let a_meta = a.metadata().ok();
-                let b_meta = b.metadata().ok();
-                let a_time = a_meta.and_then(|m| m.modified().ok());
-                let b_time = b_meta.and_then(|m| m.modified().ok());
-                b_time.cmp(&a_time)
-            });
-
-            // Lê o primeiro (mais recente)
-            if let Some(file) = json_files.first() {
-                if let Ok(content) = fs::read_to_string(file.path()) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(epoch) = json.get(epoch_type).and_then(|v| v.as_i64()) {
-                            return epoch as i32;
-                        }
-                    }
-                }
-            }
-
-            0
-        }
-        Err(_) => 0,
-    }
-}
-
-/// Calcula o nome base do arquivo partition.
-fn get_partition_base_filename(
-    current_metadata_block_epoch: i32,
-    current_metadata_tx_epoch: i32,
-    latest_epoch: i32,
-) -> String {
-    if current_metadata_block_epoch == 0 && current_metadata_tx_epoch == 0 {
-        format!("snapshot-{}-{}", latest_epoch - 1, latest_epoch - 1)
-    } else {
-        format!("snapshot-{}-{}", latest_epoch, latest_epoch)
-    }
-}
-
-/// Gera o metadata JSON em Rust puro (byte-idêntico ao C# bridge).
-fn generate_metadata_rust(
-    checkpoint_base: &Path,
-    apv: &str,
-    block_before: i32,
-    output_dir: &Path,
-    json_output: bool,
-) -> anyhow::Result<(String, String, i32)> {
-    use anyhow::Context;
-
-    // 1. Lê informações completas do header
-    let header = chain_reader::read_block_header_from_checkpoint(checkpoint_base, block_before as u64)?;
-
-    // 2. Calcula latest epoch (do timestamp do bloco)
-    let timestamp_parsed = chrono::DateTime::parse_from_rfc3339(&header.timestamp)
-        .context("Failed to parse timestamp")?;
-    let latest_epoch = (timestamp_parsed.timestamp() / EPOCH_UNIT_SECONDS) as i32;
-
-    // 3. Lê epochs do metadata anterior
-    let metadata_dir = output_dir.join("metadata");
-    let current_metadata_block_epoch = get_metadata_epoch(&metadata_dir, "BlockEpoch");
-    let current_metadata_tx_epoch = get_metadata_epoch(&metadata_dir, "TxEpoch");
-    let previous_metadata_block_epoch = get_metadata_epoch(&metadata_dir, "PreviousBlockEpoch");
-
-    // 4. Calcula previous epochs
-    let (previous_block_epoch, previous_tx_epoch) = if current_metadata_block_epoch == latest_epoch {
-        (previous_metadata_block_epoch, previous_metadata_block_epoch)
-    } else {
-        (current_metadata_block_epoch, current_metadata_tx_epoch)
-    };
-
-    // 5. Calcula block/tx epochs
-    let (block_epoch, tx_epoch) = if current_metadata_block_epoch == 0 && current_metadata_tx_epoch == 0 {
-        (latest_epoch - 1, latest_epoch - 1)
-    } else {
-        (latest_epoch, latest_epoch)
-    };
-
-    // 6. Monta o metadata
-    let metadata = BlockMetadata {
-        index: header.index,
-        timestamp: header.timestamp.clone(),
-        state_root_hash: hex::encode(header.state_root_hash),
-        previous_hash: hex::encode(header.previous_hash),
-        tx_hash: header.tx_hash.map(|h| hex::encode(h)),
-        apv: apv.to_string(),
-        block_epoch,
-        tx_epoch,
-        previous_block_epoch,
-        previous_tx_epoch,
-    };
-
-    // 7. Serializa para JSON (sem formatação, igual ao C#)
-    let metadata_json = serde_json::to_string(&metadata)
-        .context("Failed to serialize metadata")?;
-
-    // 8. Nome do arquivo partition
-    let partition_filename = get_partition_base_filename(
-        current_metadata_block_epoch,
-        current_metadata_tx_epoch,
-        latest_epoch,
-    );
-
-    Ok((metadata_json, partition_filename, latest_epoch))
-}
-
-/// Executa o GC Pipeline completo 🦀.
-fn run_gc_pipeline(
-    source_states: &Path,
-    dest_states: &Path,
-    root_hash_hex: &str,
-    json: bool,
-) -> anyhow::Result<()> {
-    use anyhow::Context;
-
-    let pipeline_start = Instant::now();
-
-    let checkpoint_dir = source_states.parent().unwrap_or(Path::new("."));
-    let export_file = checkpoint_dir.join("states_export.bin");
-    let live_keys_file = checkpoint_dir.join("live_keys.bin");
-
-    if !json {
-        eprintln!("  Source: {}", source_states.display());
-        eprintln!("  Dest : {}", dest_states.display());
-        eprintln!("  Root : {}...", &root_hash_hex[..16]);
-        eprintln!("  ⏳ Running GC Pipeline (Export + BFS + Prune + Validate )...");
-        eprintln!();
-    }
-
-    // ── Phase 1: Export (RUST) ──────────────────────────────────────
-    let phase1_start = Instant::now();
-    if !json {
-        eprintln!("📤 Phase 1: Exporting states/ 🦀...");
-    }
-
-    let export_result = exporter::export_states(source_states, &export_file)?;
-    let phase1_elapsed = phase1_start.elapsed().as_secs_f64();
-
-    if !json {
-        eprintln!("  ✅ Exported {:.0} entries in {:.1}s  |  {:.1} min",
-                  export_result.total_entries,
-                  export_result.elapsed_secs,
-                  phase1_elapsed / 60.0);
-    }
-
-    // ── Phase 2: BFS (RUST) ──────────────────────────────────────
-    let phase2_start = Instant::now();
-    if !json {
-        eprintln!("🌳 Phase 2: BFS ( 🦀 - SCAN SEQUENCIAL - 🦀 )...");
-    }
-
-    let root_bytes = hex_to_hash32(root_hash_hex)?;
-    let roots = vec![root_bytes];
-
-    gc_filter::run_gc_filter(
-        &export_file,
-        roots,
-        &live_keys_file,
-    )?;
-    let phase2_elapsed = phase2_start.elapsed().as_secs_f64();
-
-    // ── Phase 3: Prune (RUST) ──────────────────────────────────────
-    let phase3_start = Instant::now();
-    if !json {
-        eprintln!("🗑️ Phase 3: Prune  🦀 ...");
-    }
-
-    let result = pruner::prune_states(
-        source_states,
-        dest_states,
-        &live_keys_file,
-        json,
-    )?;
-    let phase3_elapsed = phase3_start.elapsed().as_secs_f64();
-
-    if !json {
-        eprintln!("  ✅ Prune: {} kept, {} deleted  |  {:.1} min",
-                  result.nodes_copied,
-                  result.nodes_deleted,
-                  phase3_elapsed / 60.0);
-    }
-
-    // ── Phase 4: Validate (RUST 🦀) ─────────────────────────────────
-    let phase4_start = Instant::now();
-    if !json {
-        eprintln!("🔍 Phase 4: Validating pruned states/ 🦀...");
-    }
-
-    chain_reader::validate_states(dest_states)
-        .context("Failed to validate pruned states/")?;
-    let phase4_elapsed = phase4_start.elapsed().as_secs_f64();
-
-    if !json {
-        eprintln!("  ✅ Validation passed!  |  {:.1}s", phase4_elapsed);
-    }
-
-    // ── Cleanup temporary files ────────────────────────────────
-    let _ = std::fs::remove_file(&export_file);
-    let _ = std::fs::remove_file(&live_keys_file);
-
-    if !json {
-        let total_elapsed = pipeline_start.elapsed().as_secs_f64();
-        let total_nodes = result.nodes_copied + result.nodes_deleted;
-        let pct_removed = if total_nodes > 0 {
-            result.nodes_deleted as f64 / total_nodes as f64 * 100.0
-        } else {
-            0.0
-        };
-
-        eprintln!("✅ GC Pipeline complete! 🦀");
-        eprintln!("  📊 Phase 1 (Export): {:.1} min", phase1_elapsed / 60.0);
-        eprintln!("  📊 Phase 2 (BFS): {:.1} min", phase2_elapsed / 60.0);
-        eprintln!("  📊 Phase 3 (Prune): {:.1} min", phase3_elapsed / 60.0);
-        eprintln!("  📊 Phase 4 (Validate): {:.1} min", phase4_elapsed / 60.0);
-        eprintln!("  💾 Nodes: {} → {} ({} deleted, {:.1}% removed)",
-                  total_nodes,
-                  result.nodes_copied,
-                  result.nodes_deleted,
-                  pct_removed);
-    }
-
-    Ok(())
-}
-
-/// Converte hex string para [u8; 32]
-fn hex_to_hash32(hex: &str) -> anyhow::Result<[u8; 32]> {
-    let mut bytes = [0u8; 32];
-    if hex.len() != 64 {
-        anyhow::bail!("Invalid hex length: expected 64, got {}", hex.len());
-    }
-    for i in 0..32 {
-        bytes[i] = u8::from_str_radix(&hex[i*2..i*2+2], 16)?;
-    }
-    Ok(bytes)
 }
 
 fn main() {
@@ -516,7 +223,7 @@ fn main() {
                         eprintln!("🚀 Fetching blockchain metadata...");
                     }
                     let metadata_output_dir = output_dir.as_ref().map(|p| p.as_path()).unwrap_or_else(|| Path::new("."));
-                    match fetch_metadata_hybrid(&source_path, apv_val, block_before, &mode, metadata_output_dir, json) {
+                    match metadata::fetch_metadata_hybrid(&source_path, apv_val, block_before, &mode, metadata_output_dir, json) {
                         Ok(res) => {
                             if !res.success {
                                 eprintln!("❌ Bridge error: {:?}", res.error);
@@ -882,7 +589,7 @@ fn main() {
                     if let Some(ref apv_val) = apv {
                         if bridge_res.is_none() {
                             let metadata_output_dir = output_dir.as_ref().map(|p| p.as_path()).unwrap_or_else(|| Path::new("."));
-                            match fetch_metadata_hybrid(&checkpoint_base, apv_val, block_before, &mode, metadata_output_dir, json) {
+                            match metadata::fetch_metadata_hybrid(&checkpoint_base, apv_val, block_before, &mode, metadata_output_dir, json) {
                                 Ok(res) => {
                                     if !res.success {
                                         eprintln!("❌ Bridge error: {:?}", res.error);
@@ -927,7 +634,7 @@ fn main() {
                             let states_src = checkpoint_base.join("states");
                             let states_gc = checkpoint_base.join("states_gc");
 
-                            match run_gc_pipeline(
+                            match pipeline::run_gc_pipeline(
                                 &states_src,
                                 &states_gc,
                                 &state_root_hex,

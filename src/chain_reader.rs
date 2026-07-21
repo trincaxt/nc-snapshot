@@ -28,6 +28,7 @@ const INDEX_KEY_LEN: usize = 1 + 16 + 8; // 25
 pub struct ChainTip {
     pub state_root_hash: [u8; 32],
     pub block_index: i64,
+    #[allow(dead_code)]
     pub block_hash: [u8; 32],
 }
 
@@ -43,6 +44,7 @@ pub struct BlockHeaderInfo {
     pub state_root_hash: [u8; 32],
     pub previous_hash: [u8; 32],
     pub tx_hash: Option<[u8; 32]>,  // Opcional: C# só inclui se != null
+    #[allow(dead_code)]
     pub block_hash: [u8; 32],
 }
 
