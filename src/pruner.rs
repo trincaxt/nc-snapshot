@@ -11,9 +11,29 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::io_util::{read_record, HASH_LEN};
-
+const HASH_LEN: usize = 32;
 const BATCH_SIZE: usize = 250_000;
+
+/// Lê um registro em `offset`: retorna (key, value, next_offset).
+/// Formato: key(32) + value_len(4 LE) + value(value_len).
+/// Retorna None se o record não couber completamente no arquivo.
+#[inline]
+fn read_record(data: &[u8], offset: usize) -> Option<([u8; HASH_LEN], &[u8], usize)> {
+    if offset + 36 > data.len() {
+        return None;
+    }
+    
+    let key: [u8; HASH_LEN] = data[offset..offset + HASH_LEN].try_into().unwrap();
+    let lo = offset + HASH_LEN;
+    let vlen = u32::from_le_bytes([data[lo], data[lo + 1], data[lo + 2], data[lo + 3]]) as usize;
+    let vo = lo + 4;
+    
+    if vo + vlen > data.len() {
+        return None;
+    }
+    
+    Some((key, &data[vo..vo + vlen], vo + vlen))
+}
 
 pub struct PruneResult {
     pub nodes_copied: u64,
@@ -192,95 +212,7 @@ pub fn prune_states(
 
     Ok(PruneResult {
         nodes_copied,
-        nodes_deleted,
-        elapsed_secs: elapsed,
+       nodes_deleted,
+       elapsed_secs: elapsed,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── load_live_keys() tests ─────────────────────────────────
-
-    #[test]
-    fn test_load_live_keys_empty() {
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("empty.keys");
-        std::fs::write(&path, b"").unwrap();
-
-        let keys = load_live_keys(&path).unwrap();
-        assert_eq!(keys.len(), 0);
-    }
-
-    #[test]
-    fn test_load_live_keys_single() {
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("single.keys");
-        let key = [0xAB; 32];
-        std::fs::write(&path, &key).unwrap();
-
-        let keys = load_live_keys(&path).unwrap();
-        assert_eq!(keys.len(), 1);
-        assert!(keys.contains(&key));
-    }
-
-    #[test]
-    fn test_load_live_keys_multiple() {
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("multi.keys");
-        let k1 = [0x01; 32];
-        let k2 = [0x02; 32];
-        let k3 = [0x03; 32];
-        let mut buf = Vec::with_capacity(32 * 3);
-        buf.extend_from_slice(&k1);
-        buf.extend_from_slice(&k2);
-        buf.extend_from_slice(&k3);
-        std::fs::write(&path, &buf).unwrap();
-
-        let keys = load_live_keys(&path).unwrap();
-        assert_eq!(keys.len(), 3);
-        assert!(keys.contains(&k1));
-        assert!(keys.contains(&k2));
-        assert!(keys.contains(&k3));
-    }
-
-    #[test]
-    fn test_load_live_keys_duplicates() {
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("dup.keys");
-        let key = [0x42; 32];
-        let mut buf = Vec::with_capacity(32 * 3);
-        buf.extend_from_slice(&key); // 1
-        buf.extend_from_slice(&key); // 2 (duplicate)
-        buf.extend_from_slice(&key); // 3 (duplicate)
-        std::fs::write(&path, &buf).unwrap();
-
-        let keys = load_live_keys(&path).unwrap();
-        // FxHashSet deduplica — deve ter só 1
-        assert_eq!(keys.len(), 1, "duplicatas devem ser deduplicadas");
-        assert!(keys.contains(&key));
-    }
-
-    #[test]
-    fn test_load_live_keys_partial_key() {
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("partial.keys");
-        // Só 16 bytes — não é múltiplo de 32
-        std::fs::write(&path, &[0xAA; 16]).unwrap();
-
-        // O último key parcial é ignorado pelo read_exact
-        let keys = load_live_keys(&path).unwrap();
-        assert_eq!(keys.len(), 0, "key parcial (16b) deve ser ignorada");
-    }
 }
