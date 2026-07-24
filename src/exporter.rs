@@ -37,9 +37,8 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
     // ── Abrir RocksDB em modo read-only ──────────────────────────────
     let mut opts = Options::default();
     opts.create_if_missing(false);
-    // Scan 100% sequencial: reabilita readahead do kernel
-    // (default true = FADV_RANDOM, desliga readahead do SO)
     opts.set_advise_random_on_open(false);
+    opts.set_max_open_files(500);
 
     // Usar format_version 5 para compatibilidade com Libplanet
     let mut block_opts = rocksdb::BlockBasedOptions::default();

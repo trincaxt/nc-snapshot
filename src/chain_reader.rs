@@ -472,6 +472,7 @@ pub fn read_block_header_from_checkpoint(
 pub fn validate_states(path: &Path) -> anyhow::Result<()> {
     let mut opts = Options::default();
     opts.create_if_missing(false);
+    opts.set_max_open_files(500);
     let _db = DB::open_for_read_only(&opts, path, false)
     .with_context(|| format!("Falha ao validar states/: {}", path.display()))?;
     // Se chegou aqui, o DB é válido

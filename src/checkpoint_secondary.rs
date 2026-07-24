@@ -65,9 +65,22 @@ pub fn create_checkpoint_secondary(
         // STEP 1: Open as secondary
         // ═══════════════════════════════════════════════════════════════
         let mut opts = Options::default();
-        // Note: set_skip_checking_sst_file_sizes_on_db_open is deprecated in RocksDB >= 10.5
-        // and the option is now ignored (checking done with thread pool automatically)
         opts.set_paranoid_checks(false);
+        opts.set_skip_stats_update_on_db_open(true);
+
+        // Limit open SST files to avoid EMFILE (Too many open files) on large databases.
+        // The primary (node) typically has thousands of SST files open, and when the
+        // secondary opens the same files concurrently we can hit system/inner limits.
+        // Setting max_open_files to a moderate value (0 = keep closed, >0 = max open)
+        // avoids exhausting file descriptors.
+        opts.set_max_open_files(500);
+
+        // Use same BlockBasedOptions as exporter.rs for Libplanet RocksDB format compatibility.
+        // The database was created by RocksDB 8.5.3 but we use librocksdb-sys 10.4.2 bundled
+        // with rocksdb 0.24. Setting format_version(5) ensures backward-compatible reads.
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        block_opts.set_format_version(5);
+        opts.set_block_based_table_factory(&block_opts);
 
         let db = DB::open_as_secondary(&opts, source_db, &temp_secondary)
             .with_context(|| format!("Failed to open {} as secondary", source_db.display()))?;
@@ -119,8 +132,8 @@ pub fn create_checkpoint_secondary(
 fn validate_checkpoint_light(path: &Path) -> Result<()> {
     let mut opts = Options::default();
     opts.create_if_missing(false);
-    // Note: set_skip_checking_sst_file_sizes_on_db_open is deprecated in RocksDB >= 10.5
     opts.set_paranoid_checks(false);
+    opts.set_max_open_files(500);
 
     // Use same BlockBasedOptions as exporter.rs for states/ compatibility
     let mut block_opts = rocksdb::BlockBasedOptions::default();

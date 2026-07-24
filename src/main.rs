@@ -357,7 +357,7 @@ fn main() {
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("❌ Failed to checkpoint {}: {}", display_name, e);
+                                        eprintln!("❌ Failed to checkpoint {}: {:#}", display_name, e);
                                         checkpoint_ok = false;
                                         break;
                                     }
@@ -408,7 +408,7 @@ fn main() {
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("❌ Failed to checkpoint {}: {}", display_name, e);
+                                        eprintln!("❌ Failed to checkpoint {}: {:#}", display_name, e);
                                         checkpoint_ok = false;
                                         break;
                                     }
@@ -513,7 +513,7 @@ fn main() {
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("❌ Failed to checkpoint {}: {}", display_name, e);
+                                        eprintln!("❌ Failed to checkpoint {}: {:#}", display_name, e);
                                         checkpoint_ok = false;
                                         break;
                                     }
