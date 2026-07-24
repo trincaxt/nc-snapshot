@@ -24,7 +24,7 @@ memmap2 = "0.9.11"
 hex = "0.4"
 rustc-hash = "2"
 memchr = "2.7"
-bencodex = { path = "bencodex/bencodex-rs", package = "bencodex-rs" }
+bencodex = { git = "https://github.com/moreal/bencodex-rs.git", package = "bencodex-rs", rev = "97d9660ca9f33020ace4d346ad3e256d2334a181" }
 
 [lib]
 name = "nc_snapshot"
