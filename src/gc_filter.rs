@@ -66,7 +66,9 @@ fn bfs_fixpoint(
     let mut pass = 0;
     let mut buf: Vec<[u8; HASH_LEN]> = Vec::with_capacity(32);
 
-    const MAX_PASSES: usize = 18; // Early termination: evita passes 19-20 ineficientes
+    // Só uma trava de segurança contra loop infinito. NÃO é critério de parada: parar antes do fixpoint
+    // descarta nós vivos (os que ainda estão em `pending` e os descendentes deles).
+    const SAFETY_MAX_PASSES: usize = 10_000;
 
     while !pending.is_empty() {
         let start = std::time::Instant::now();
@@ -78,7 +80,13 @@ fn bfs_fixpoint(
 
         while offset < data_len {
             let Some((key, value, next)) = read_record(data, offset) else {
-                break;
+                // Antes: `break` silencioso. Um export truncado (disco cheio, cópia interrompida) resultaria
+                // num conjunto de nós vivos incompleto, e o prune apagaria nós vivos.
+                anyhow::bail!(
+                    "Export truncado ou corrompido: registro incompleto no offset {} de {} bytes",
+                    offset,
+                    data_len
+                );
             };
             offset = next;
             scanned += 1;
@@ -118,13 +126,13 @@ fn bfs_fixpoint(
             break;
         }
 
-        // Early termination: últimos passes têm custo/benefício ruim
-        if pass >= MAX_PASSES {
-            if !pending.is_empty() {
-                eprintln!("   ⏱️ Reached max passes ({}), stopping early. {} pending ignored (likely dangling).",
-                          MAX_PASSES, pending.len());
-            }
-            break;
+        // Cada passe com found > 0 pode ter descoberto filhos novos: continuar até o fixpoint (found == 0).
+        if pass >= SAFETY_MAX_PASSES {
+            anyhow::bail!(
+                "BFS não convergiu em {} passes ({} pending). Abortando para não podar nós vivos.",
+                pass,
+                pending.len()
+            );
         }
     }
 
@@ -220,5 +228,153 @@ mod tests {
         let mut out = Vec::new();
         extract_child_hashes(&data, &mut out);
         assert_eq!(out.len(), 2);
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Corretude do BFS: tem que achar EXATAMENTE os nós alcançáveis a partir da raiz,
+    // em qualquer ordem de arquivo (o limite antigo de 18 passes descartava nós vivos).
+    // ───────────────────────────────────────────────────────────────────
+    use std::collections::{HashMap, HashSet};
+
+    type H = [u8; 32];
+
+    /// hash determinístico sem o byte ':' (0x3A), para não criar falsos "32:" por acaso
+    fn h(n: u64) -> H {
+        let mut out = [0u8; 32];
+        let mut x = n.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
+        for b in out.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let mut v = (x >> 24) as u8;
+            if v == b':' {
+                v = b';';
+            }
+            *b = v;
+        }
+        out
+    }
+
+    struct Node {
+        key: H,
+        children: Vec<H>,
+    }
+
+    fn write_export(path: &std::path::Path, nodes: &[&Node]) {
+        use std::io::Write;
+        let mut f = std::fs::File::create(path).unwrap();
+        for n in nodes {
+            let mut value = b"d1:t1:n".to_vec(); // lixo de prefixo, como num valor Bencodex
+            for c in &n.children {
+                value.extend_from_slice(b"32:");
+                value.extend_from_slice(c);
+            }
+            f.write_all(&n.key).unwrap();
+            f.write_all(&(value.len() as u32).to_le_bytes()).unwrap();
+            f.write_all(&value).unwrap();
+        }
+    }
+
+    fn run(nodes: &[&Node], root: H) -> HashSet<H> {
+        let dir = tempfile::tempdir().unwrap();
+        let (exp, out) = (dir.path().join("export.bin"), dir.path().join("live.bin"));
+        write_export(&exp, nodes);
+        run_gc_filter(&exp, vec![root], &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(bytes.len() % 32, 0);
+        bytes.chunks(32).map(|c| <H>::try_from(c).unwrap()).collect()
+    }
+
+    fn chain(n: u64) -> Vec<Node> {
+        (0..n)
+            .map(|i| Node { key: h(i), children: if i + 1 < n { vec![h(i + 1)] } else { vec![] } })
+            .collect()
+    }
+
+    #[test]
+    fn bfs_chain_in_forward_order_single_pass() {
+        let nodes = chain(30);
+        let refs: Vec<&Node> = nodes.iter().collect();
+        assert_eq!(run(&refs, h(0)).len(), 30);
+    }
+
+    #[test]
+    fn bfs_chain_deeper_than_18_in_reverse_file_order_keeps_every_live_node() {
+        // pior caso: cada passe só desce UM nível (o filho aparece antes do pai no arquivo)
+        for depth in [18u64, 19, 21, 30, 64] {
+            let nodes = chain(depth);
+            let refs: Vec<&Node> = nodes.iter().rev().collect();
+            let live = run(&refs, h(0));
+            assert_eq!(
+                live.len() as u64,
+                depth,
+                "profundidade {depth}: {} nós vivos foram descartados",
+                depth - live.len() as u64
+            );
+        }
+    }
+
+    #[test]
+    fn bfs_dangling_references_are_ignored_and_garbage_is_dropped() {
+        let a = Node { key: h(1), children: vec![h(2), h(999)] }; // h(999) não existe no export
+        let b = Node { key: h(2), children: vec![] };
+        let garbage = Node { key: h(3), children: vec![h(2)] }; // ninguém aponta para ele
+        let live = run(&[&garbage, &b, &a], h(1));
+        assert_eq!(live, HashSet::from([h(1), h(2)]));
+    }
+
+    #[test]
+    fn bfs_truncated_export_is_an_error_not_a_silent_partial_result() {
+        let nodes = chain(10);
+        let refs: Vec<&Node> = nodes.iter().collect();
+        let dir = tempfile::tempdir().unwrap();
+        let (exp, out) = (dir.path().join("export.bin"), dir.path().join("live.bin"));
+        write_export(&exp, &refs);
+        let len = std::fs::metadata(&exp).unwrap().len();
+        let f = std::fs::OpenOptions::new().write(true).open(&exp).unwrap();
+        f.set_len(len - 5).unwrap(); // corta o fim do último registro
+        let err = run_gc_filter(&exp, vec![h(0)], &out).unwrap_err();
+        assert!(err.to_string().contains("truncado"), "erro inesperado: {err}");
+    }
+
+    /// Propriedade: em árvores aleatórias, com ordem aleatória no arquivo, live == alcançáveis (DFS em memória).
+    #[test]
+    fn bfs_random_forests_match_reference_reachability() {
+        let mut s: u64 = 0x1234_5678_9ABC_DEF1;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for round in 0..40u64 {
+            let n = 20 + (rnd() % 400);
+            // árvore "comprida": o pai de i está entre os últimos 3 índices -> profundidade grande
+            let mut nodes: Vec<Node> =
+                (0..n).map(|i| Node { key: h(round * 10_000 + i), children: vec![] }).collect();
+            for i in 1..n {
+                let p = i.saturating_sub(1 + rnd() % 3);
+                let child = nodes[i as usize].key;
+                nodes[p as usize].children.push(child);
+            }
+            let garbage: Vec<Node> =
+                (0..n / 2).map(|i| Node { key: h(round * 10_000 + 5_000 + i), children: vec![] }).collect();
+            let mut all: Vec<&Node> = nodes.iter().chain(garbage.iter()).collect();
+            for i in (1..all.len()).rev() {
+                all.swap(i, (rnd() % (i as u64 + 1)) as usize); // embaralha
+            }
+            let by_key: HashMap<H, &Node> = nodes.iter().map(|x| (x.key, x)).collect();
+            let mut expected = HashSet::new();
+            let mut stack = vec![nodes[0].key];
+            while let Some(k) = stack.pop() {
+                if expected.insert(k) {
+                    stack.extend(by_key[&k].children.iter().copied());
+                }
+            }
+            let live = run(&all, nodes[0].key);
+            let missing = expected.difference(&live).count();
+            assert_eq!(missing, 0, "rodada {round}: {missing} nós vivos descartados (de {})", expected.len());
+            assert_eq!(live, expected, "rodada {round}");
+        }
     }
 }
