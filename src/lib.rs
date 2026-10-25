@@ -3,6 +3,7 @@ pub mod checkpoint_secondary;
 pub mod errors;
 pub mod exporter;
 pub mod gc_filter;
+pub mod gc_index;
 pub mod io_util;
 pub mod metadata;
 pub mod node_detect;

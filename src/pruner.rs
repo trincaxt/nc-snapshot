@@ -5,7 +5,7 @@
 
 use anyhow::Context;
 use rocksdb::{DB, Options, WriteBatch, BlockBasedOptions};
-use rustc_hash::FxHashSet;
+use crate::gc_index::LiveSet;
 use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
@@ -83,39 +83,11 @@ fn open_dest(path: &Path) -> anyhow::Result<DB> {
     .with_context(|| format!("Falha ao criar states_gc/: {}", path.display()))
 }
 
-/// Carrega live keys do arquivo binário
-fn load_live_keys(live_keys_file: &Path) -> anyhow::Result<FxHashSet<[u8; HASH_LEN]>> {
-    use std::io::Read;
-
-    let mut file = std::fs::File::open(live_keys_file)
-    .with_context(|| format!("Failed to open live_keys file: {}", live_keys_file.display()))?;
-
-    let file_size = file.metadata()?.len();
-    let num_keys = file_size / 32;
-
-    eprintln!("   📂 Loading {} live keys from {}", num_keys, live_keys_file.display());
-
-    let mut keys = FxHashSet::with_capacity_and_hasher(num_keys as usize, Default::default());
-    let mut buf = [0u8; HASH_LEN];
-    let mut count = 0;
-
-    while let Ok(()) = file.read_exact(&mut buf) {
-        keys.insert(buf);
-        count += 1;
-        if count & 0x7FFFFF == 0 {
-            eprintln!("   📂 Loaded {}M live keys...", count >> 20);
-        }
-    }
-
-    eprintln!("   📂 Loaded {} live keys", keys.len());
-    Ok(keys)
-}
-
 /// Executa o PRUNE: copia apenas keys vivas para o novo DB
 pub fn prune_states(
     export_file: &Path,
     dest_path: &Path,
-    live_keys_file: &Path,
+    live_bits_file: &Path,
     json: bool,
 ) -> anyhow::Result<PruneResult> {
     let start = Instant::now();
@@ -124,14 +96,14 @@ pub fn prune_states(
         eprintln!("🧹 Prune states/ iniciado (🦀)");
         eprintln!("   Export  : {}", export_file.display());
         eprintln!("   Dest    : {}", dest_path.display());
-        eprintln!("   Live keys: {}", live_keys_file.display());
+        eprintln!("   Live bits: {}", live_bits_file.display());
     }
 
-    // ── Carregar live keys ──────────────────────────────────────────
-    let live_keys = load_live_keys(live_keys_file)?;
+    // ── Bitset de vivos: bit i = i-ésimo registro do export (sem hash lookup) ──
+    let live = LiveSet::load(live_bits_file)?;
 
     if !json {
-        eprintln!("   ✅ Live keys loaded: {}", live_keys.len());
+        eprintln!("   ✅ Live bits loaded: {} vivos de {}", live.count_ones(), live.len());
     }
 
     // ── Abrir export file (mmap) e dest DB ──────────────────────────
@@ -157,12 +129,18 @@ pub fn prune_states(
 
     while offset < data_len {
         let Some((key, value, next)) = read_record(data, offset) else {
-            break;
+            // Antes: `break` silencioso. Export truncado => nós vivos descartados sem erro.
+            anyhow::bail!(
+                "Export truncado ou corrompido: registro incompleto no offset {} de {} bytes",
+                offset,
+                data_len
+            );
         };
         offset = next;
+        let ordinal = total_scanned;
         total_scanned += 1;
 
-        if live_keys.contains(&key) {
+        if live.get(ordinal) {
             batch.put(&key, value);
             nodes_copied += 1;
         } else {
@@ -186,6 +164,14 @@ pub fn prune_states(
     if !batch.is_empty() {
         dest.write(batch).context("Flush final")?;
     }
+
+    // O bitset foi gerado para ESTE export: mesmo número de registros.
+    anyhow::ensure!(
+        total_scanned == live.len(),
+        "Bitset de vivos ({} bits) não corresponde ao export ({} registros)",
+        live.len(),
+        total_scanned
+    );
 
     // ── BULK LOAD MODE: compactar tudo uma vez no final ─────────
     if !json {

@@ -1,8 +1,8 @@
 //! GC Pipeline orchestration — Export + BFS + Prune + Validate.
 //!
 //! Orquestra as 4 fases do State Trie Garbage Collection:
-//!   1. Export states/ → arquivo binário sequencial
-//!   2. Fixpoint BFS pra achar todos os nós vivos
+//!   1. Export states/ → arquivo binário sequencial (+ índice hash→offset)
+//!   2. BFS indexado por nível pra achar todos os nós vivos (bitset)
 //!   3. Prune: copia só nós vivos pra um novo DB
 //!   4. Validate: abre o DB podado pra ver se é válido
 
@@ -10,7 +10,7 @@ use anyhow::Context;
 use std::path::Path;
 use std::time::Instant;
 use crate::io_util::hex_to_hash32;
-use crate::{chain_reader, exporter, gc_filter, pruner};
+use crate::{chain_reader, exporter, gc_index, pruner};
 
 /// Executa o GC Pipeline completo.
 pub fn run_gc_pipeline(
@@ -23,7 +23,8 @@ pub fn run_gc_pipeline(
 
     let checkpoint_dir = source_states.parent().unwrap_or(Path::new("."));
     let export_file = checkpoint_dir.join("states_export.bin");
-    let live_keys_file = checkpoint_dir.join("live_keys.bin");
+    let index_file = gc_index::index_path_for(&export_file);
+    let live_bits_file = checkpoint_dir.join("live_bits.bin");
 
     if !json {
         eprintln!("  Source: {}", source_states.display());
@@ -54,13 +55,13 @@ pub fn run_gc_pipeline(
     // ── Phase 2: BFS ────────────────────────────────────────────
     let phase2_start = Instant::now();
     if !json {
-        eprintln!("🌳 Phase 2: BFS ( 🦀 - SCAN SEQUENCIAL - 🦀 )...");
+        eprintln!("🌳 Phase 2: BFS ( 🦀 - BFS INDEXADO POR NÍVEL - 🦀 )...");
     }
 
     let root_bytes = hex_to_hash32(root_hash_hex)?;
     let roots = vec![root_bytes];
 
-    gc_filter::run_gc_filter(&export_file, roots, &live_keys_file)?;
+    gc_index::run_gc_filter_indexed(&export_file, &index_file, roots, &live_bits_file)?;
     let phase2_elapsed = phase2_start.elapsed().as_secs_f64();
 
     // ── Phase 3: Prune ──────────────────────────────────────────
@@ -69,7 +70,7 @@ pub fn run_gc_pipeline(
         eprintln!("🗑️ Phase 3: Prune  🦀 ...");
     }
 
-    let result = pruner::prune_states(&export_file, dest_states, &live_keys_file, json)?;
+    let result = pruner::prune_states(&export_file, dest_states, &live_bits_file, json)?;
     let phase3_elapsed = phase3_start.elapsed().as_secs_f64();
 
     if !json {
@@ -97,7 +98,8 @@ pub fn run_gc_pipeline(
 
     // ── Cleanup ─────────────────────────────────────────────────
     let _ = std::fs::remove_file(&export_file);
-    let _ = std::fs::remove_file(&live_keys_file);
+    let _ = std::fs::remove_file(&index_file);
+    let _ = std::fs::remove_file(&live_bits_file);
 
     if !json {
         let _total_elapsed = pipeline_start.elapsed().as_secs_f64();

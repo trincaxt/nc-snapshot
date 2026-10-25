@@ -4,6 +4,7 @@ mod snapshot;
 mod types;
 mod verify;
 mod gc_filter;
+mod gc_index;
 mod pruner;
 mod exporter;
 mod chain_reader;

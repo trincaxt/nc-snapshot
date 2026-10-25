@@ -10,6 +10,7 @@
 //! - BufWriter 128MB para batching de escrita
 
 use anyhow::{Context, Result};
+use crate::gc_index::{index_path_for, IndexWriter};
 use rocksdb::{DB, Options, ReadOptions};
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -53,6 +54,11 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
     .with_context(|| format!("Failed to create export file: {}", output_file.display()))?;
     let mut writer = BufWriter::with_capacity(128 * 1024 * 1024, file);
 
+    // Índice hash→offset gravado junto (states_export.idx). O RocksDB entrega em ordem de chave;
+    // o IndexWriter falha se alguma chave vier fora de ordem.
+    let mut index = IndexWriter::create(&index_path_for(output_file))?;
+    let mut offset: u64 = 0;
+
     let mut count = 0u64;
     let mut last_log = Instant::now();
 
@@ -75,6 +81,9 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
         let value = iter.value().expect("valid() true implies value exists");
 
         if key.len() == 32 {
+            index.push(key, offset)?;
+            offset += 36 + value.len() as u64; // key32 + len4 + value
+
             // ── ESCREVER DIRETO NO BUFWRITER (ZERO ALLOC EXTRA) ──
             writer.write_all(key)
             .with_context(|| format!("Failed to write entry {}", count))?;
@@ -105,6 +114,8 @@ pub fn export_states(states_path: &Path, output_file: &Path) -> Result<ExportRes
     .context("Iterator failed mid-scan")?;
 
     writer.flush()?;
+    let indexed = index.finish()?;
+    anyhow::ensure!(indexed == count, "índice com {} entradas, export com {}", indexed, count);
 
     let elapsed = start.elapsed().as_secs_f64();
     let file_size = std::fs::metadata(output_file)

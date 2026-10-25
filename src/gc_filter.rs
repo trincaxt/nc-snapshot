@@ -19,7 +19,7 @@ use crate::io_util::{read_record, HASH_LEN};
 const BENCODEX_HASH_PREFIX: &[u8] = b"32:";
 
 /// Extrai child hashes do value (padrão Bencodex "32:" + 32 bytes)
-fn extract_child_hashes(data: &[u8], out: &mut Vec<[u8; HASH_LEN]>) {
+pub(crate) fn extract_child_hashes(data: &[u8], out: &mut Vec<[u8; HASH_LEN]>) {
     const PREFIX: &[u8] = BENCODEX_HASH_PREFIX;
     const STEP: usize = PREFIX.len() + HASH_LEN; // 35 bytes
 
@@ -42,6 +42,10 @@ fn extract_child_hashes(data: &[u8], out: &mut Vec<[u8; HASH_LEN]>) {
 
 /// BFS por fixpoint: working-set mutável, filhos entram no mesmo passe.
 /// Repete scans sequenciais completos até um passe não descobrir nada novo.
+///
+/// Mantido como baseline de comparação para examples/scale_example.rs; o
+/// pipeline usa o BFS indexado (gc_index::run_gc_filter_indexed).
+#[allow(dead_code)]
 fn bfs_fixpoint(
     export_path: &Path,
     roots: &[[u8; HASH_LEN]],
@@ -141,6 +145,7 @@ fn bfs_fixpoint(
 }
 
 /// Pipeline completo: lê export file, faz BFS fixpoint, escreve keys vivas.
+#[allow(dead_code)]
 pub fn run_gc_filter(
     export_path: &Path,
     roots: Vec<[u8; HASH_LEN]>,
