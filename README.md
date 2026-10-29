@@ -1,6 +1,7 @@
 # ⚡ nc-snapshot
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/trincaxt/badge.svg)](https://hub.xerj.org/contributors/trincaxt)
 
 A high-performance snapshot engine for the **Nine Chronicles** blockchain. `nc-snapshot` generates consistent live snapshots from running nodes using a Rust-based State Trie Garbage Collection pipeline, multi-threaded archive generation, and official Libplanet validation.
 
@@ -12,7 +13,7 @@ A high-performance snapshot engine for the **Nine Chronicles** blockchain. `nc-s
 - **🦀 Rust snapshot engine** — export, BFS, GC, archive, verify
 - **🌳 State Trie Garbage Collection** — removes unreachable trie nodes
 - **💾 RocksDB secondary mode checkpoints** — consistent, captures memtable
-- **⚡ mmap-based fixpoint BFS traversal** — low RAM footprint
+- **⚡ Indexed BFS by level (hash→offset + bitset)** — ultra-fast traversal with minimal RAM footprint
 - **📦 Multi-threaded** Zstandard compression
 - **🔐 BLAKE3** integrity manifests
 - **✅ Native** Rust validation
