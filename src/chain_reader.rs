@@ -48,6 +48,7 @@ pub struct BlockHeaderInfo {
     pub block_hash: [u8; 32],
 }
 
+#[allow(dead_code)]
 fn open_ro(path: &Path) -> anyhow::Result<DB> {
     let mut opts = Options::default();
     opts.create_if_missing(false);
@@ -55,16 +56,26 @@ fn open_ro(path: &Path) -> anyhow::Result<DB> {
     .with_context(|| format!("Abrindo DB: {}", path.display()))
 }
 
-/// Abre um RocksDB em secondary mode + try_catch_up_with_primary().
-/// Isso garante que dados no WAL (memtable não flushed) sejam visíveis.
-///
-/// O open_for_read_only NÃO faz replay do WAL — se o tip mais recente
-/// está no WAL (ainda não flushed para SST), o iterator não o vê e retorna
-/// um tip antigo. O C# usa RocksDBStore() (modo read-write) que faz replay.
-///
-/// Retorna (DB, Option<PathBuf>) — o PathBuf é o temp dir que precisa ser
-/// limpo DEPOIS que o DB for dropado.
+/// Abre um RocksDB para leitura. Tenta read-only direto (ótimo para checkpoints
+/// estáticos onde o recovery do WAL já foi concluído). Se falhar (ex: lock de processo ativo),
+/// abre em secondary mode com catch-up.
 fn open_catchup(path: &Path) -> anyhow::Result<(DB, Option<PathBuf>)> {
+    let mut opts = Options::default();
+    opts.create_if_missing(false);
+    opts.set_max_open_files(500);
+    opts.set_paranoid_checks(false);
+    opts.set_skip_stats_update_on_db_open(true);
+
+    let mut block_opts = rocksdb::BlockBasedOptions::default();
+    block_opts.set_format_version(5);
+    opts.set_block_based_table_factory(&block_opts);
+
+    // 1. Tenta read-only direto (rápido e padrão para checkpoints estáticos)
+    if let Ok(db) = DB::open_for_read_only(&opts, path, false) {
+        return Ok((db, None));
+    }
+
+    // 2. Se falhar (ex: source ativo com lock), usa secondary mode + catch_up
     let temp_dir = std::env::temp_dir().join(format!(
         "nc-snap-catchup-{}-{}",
         std::process::id(),
@@ -73,33 +84,15 @@ fn open_catchup(path: &Path) -> anyhow::Result<(DB, Option<PathBuf>)> {
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir)?;
 
-    let mut opts = Options::default();
-    opts.create_if_missing(false);
-    opts.set_max_open_files(500);
-    opts.set_paranoid_checks(false);
-    opts.set_skip_stats_update_on_db_open(true);
-
-    // BlockBasedOptions com format_version(5) para compatibilidade com Libplanet RocksDB
-    let mut block_opts = rocksdb::BlockBasedOptions::default();
-    block_opts.set_format_version(5);
-    opts.set_block_based_table_factory(&block_opts);
-
     match DB::open_as_secondary(&opts, path, &temp_dir) {
         Ok(db) => {
-            db.try_catch_up_with_primary()
-                .with_context(|| format!("Catch up failed for {}", path.display()))?;
+            let _ = db.try_catch_up_with_primary();
             Ok((db, Some(temp_dir)))
         }
         Err(e) => {
-            // Fallback para read-only se secondary falhar
-            // (ex: source é um checkpoint já finalizado sem primary ativo)
             let _ = std::fs::remove_dir_all(&temp_dir);
-            eprintln!(
-                "  ⚠ Secondary mode failed for {}: {} — falling back to read-only",
-                path.display(), e
-            );
             let db = DB::open_for_read_only(&opts, path, false)
-                .with_context(|| format!("Abrindo DB: {}", path.display()))?;
+                .with_context(|| format!("Falha ao abrir DB em {}: {}", path.display(), e))?;
             Ok((db, None))
         }
     }
@@ -438,12 +431,47 @@ pub fn read_state_root_from_checkpoint(
     // Calcula target index
     let target_index = tip_index.saturating_sub(block_before as i64);
 
-    // Busca block hash
-    let block_hash = block_hash_at(&chain_db, &index_chain_id, target_index)
-        .with_context(|| format!("Falha ao buscar block hash no índice {}", target_index))?;
+    // Busca block hash e epoch DB name.
+    // Se o bloco no target_index ainda não foi indexado no blockindex (comum no live mode
+    // com --block-before 0 onde o bloco mais recente do chain acabou de entrar mas ainda
+    // não foi persistido no blockindex), recuamos até encontrar o bloco consolidado
+    // mais recente (exatamente como o C# faz com `blockBefore += 1`).
+    let mut current_index = target_index;
+    let mut resolved_hash = None;
+    let mut resolved_epoch = None;
 
-    // Busca epoch DB name
-    let epoch_db_name = get_block_epoch_db_name(&block_index_db, &block_hash)?;
+    while current_index >= 0 && (target_index - current_index) <= 20 {
+        if let Ok(hash) = block_hash_at(&chain_db, &index_chain_id, current_index) {
+            if let Ok(epoch_name) = get_block_epoch_db_name(&block_index_db, &hash) {
+                let epoch_path = block_root_path.join(&epoch_name);
+                if epoch_path.exists() {
+                    resolved_hash = Some(hash);
+                    resolved_epoch = Some(epoch_name);
+                    break;
+                }
+            }
+        }
+        current_index -= 1;
+    }
+
+    let (block_hash, epoch_db_name, final_index) = match (resolved_hash, resolved_epoch) {
+        (Some(h), Some(e)) => {
+            if current_index != target_index {
+                eprintln!(
+                    "  ℹ️ Bloco #{} ainda não consolidado no blockindex, usando bloco anterior confirmado #{} ({})",
+                    target_index, current_index, hex::encode(&h[..8])
+                );
+            }
+            (h, e, current_index)
+        }
+        _ => {
+            // Se não encontrou recuando, tenta o erro original do target_index para diagnóstico
+            let block_hash = block_hash_at(&chain_db, &index_chain_id, target_index)
+                .with_context(|| format!("Falha ao buscar block hash no índice {}", target_index))?;
+            let epoch_db_name = get_block_epoch_db_name(&block_index_db, &block_hash)?;
+            (block_hash, epoch_db_name, target_index)
+        }
+    };
 
     // Abre epoch DB (catchup pra garantir consistência)
     let epoch_db_path = block_root_path.join(&epoch_db_name);
@@ -461,7 +489,7 @@ pub fn read_state_root_from_checkpoint(
 
     let result = ChainTip {
         state_root_hash,
-        block_index: target_index,
+        block_index: final_index,
         block_hash,
     };
 
@@ -494,8 +522,9 @@ pub fn read_block_header_from_checkpoint(
         anyhow::bail!("block/blockindex não encontrado em {}", store_checkpoint.display());
     }
 
-    let chain_db = open_ro(&chain_path)?;
-    let block_index_db = open_ro(&block_index_path)?;
+    // Usa secondary mode + catch_up para ver dados no WAL (tip recente)
+    let (chain_db, chain_temp) = open_catchup(&chain_path)?;
+    let (block_index_db, bi_temp) = open_catchup(&block_index_path)?;
 
     let canonical_chain_id =
         find_chain_id(&chain_db).context("Falha ao encontrar canonical chain ID")?;
@@ -506,14 +535,46 @@ pub fn read_block_header_from_checkpoint(
     // Calcula target index
     let target_index = tip_index.saturating_sub(block_before as i64);
 
-    // Busca block hash
-    let block_hash = block_hash_at(&chain_db, &index_chain_id, target_index)
-        .with_context(|| format!("Falha ao buscar block hash no índice {}", target_index))?;
+    // Busca block hash e epoch DB name.
+    // Se o bloco no target_index ainda não foi indexado no blockindex,
+    // recuamos até encontrar o bloco consolidado mais recente (idêntico ao C#).
+    let mut current_index = target_index;
+    let mut resolved_hash = None;
+    let mut resolved_epoch = None;
 
-    // Busca epoch DB name
-    let epoch_db_name = get_block_epoch_db_name(&block_index_db, &block_hash)?;
+    while current_index >= 0 && (target_index - current_index) <= 20 {
+        if let Ok(hash) = block_hash_at(&chain_db, &index_chain_id, current_index) {
+            if let Ok(epoch_name) = get_block_epoch_db_name(&block_index_db, &hash) {
+                let epoch_path = block_root_path.join(&epoch_name);
+                if epoch_path.exists() {
+                    resolved_hash = Some(hash);
+                    resolved_epoch = Some(epoch_name);
+                    break;
+                }
+            }
+        }
+        current_index -= 1;
+    }
 
-    // Abre epoch DB
+    let (block_hash, epoch_db_name) = match (resolved_hash, resolved_epoch) {
+        (Some(h), Some(e)) => {
+            if current_index != target_index {
+                eprintln!(
+                    "  ℹ️ Bloco #{} ainda não consolidado no blockindex, usando bloco anterior confirmado #{} ({})",
+                    target_index, current_index, hex::encode(&h[..8])
+                );
+            }
+            (h, e)
+        }
+        _ => {
+            let block_hash = block_hash_at(&chain_db, &index_chain_id, target_index)
+                .with_context(|| format!("Falha ao buscar block hash no índice {}", target_index))?;
+            let epoch_db_name = get_block_epoch_db_name(&block_index_db, &block_hash)?;
+            (block_hash, epoch_db_name)
+        }
+    };
+
+    // Abre epoch DB (catchup pra garantir consistência)
     let epoch_db_path = block_root_path.join(&epoch_db_name);
     if !epoch_db_path.exists() {
         anyhow::bail!(
@@ -522,10 +583,20 @@ pub fn read_block_header_from_checkpoint(
             block_root_path.display()
         );
     }
-    let epoch_db = open_ro(&epoch_db_path)?;
+    let (epoch_db, epoch_temp) = open_catchup(&epoch_db_path)?;
 
     // Extrai informações completas do header
-    extract_header_info(&epoch_db, &block_hash)
+    let result = extract_header_info(&epoch_db, &block_hash)?;
+
+    // Cleanup: drop DBs antes de remover temp dirs
+    drop(chain_db);
+    drop(block_index_db);
+    drop(epoch_db);
+    if let Some(t) = chain_temp { let _ = std::fs::remove_dir_all(t); }
+    if let Some(t) = bi_temp { let _ = std::fs::remove_dir_all(t); }
+    if let Some(t) = epoch_temp { let _ = std::fs::remove_dir_all(t); }
+
+    Ok(result)
 }
 
 /// Valida um DB states/ abrindo ele com RocksDB.

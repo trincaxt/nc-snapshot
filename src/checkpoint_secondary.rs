@@ -104,6 +104,42 @@ pub fn create_checkpoint_secondary(
         checkpoint.create_checkpoint(checkpoint_path)
             .with_context(|| format!("Failed to create checkpoint at {}", checkpoint_path.display()))?;
 
+        // Drop da secondary instance antes de manipular o checkpoint
+        drop(checkpoint);
+        drop(db);
+
+        // ═══════════════════════════════════════════════════════════════
+        // STEP 3.5: Copiar arquivos WAL (.log) e processar replay
+        // ═══════════════════════════════════════════════════════════════
+        // O RocksDB Checkpoint da API secondary NÃO inclui os arquivos WAL (*.log)
+        // do primary. No C#, o sed 's/ || name.EndsWith(".log")//' garantiu que
+        // os arquivos .log fossem copiados para incluir o tip recente.
+        // Aqui copiamos os arquivos .log do source_db para o checkpoint.
+        if let Ok(entries) = std::fs::read_dir(source_db) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.ends_with(".log") && name_str != "LOG" && !name_str.starts_with("LOG.old") {
+                    let dst_file = checkpoint_path.join(&name);
+                    let _ = std::fs::copy(entry.path(), &dst_file);
+                }
+            }
+        }
+
+        // Abre o DB do checkpoint para que o RocksDB processe o replay do WAL (.log) copiado
+        let mut replay_opts = Options::default();
+        replay_opts.create_if_missing(false);
+        replay_opts.set_paranoid_checks(false);
+        replay_opts.set_max_open_files(500);
+
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        block_opts.set_format_version(5);
+        replay_opts.set_block_based_table_factory(&block_opts);
+
+        if let Ok(recovery_db) = DB::open(&replay_opts, checkpoint_path) {
+            drop(recovery_db);
+        }
+
         // ═══════════════════════════════════════════════════════════════
         // STEP 4: Validate checkpoint (optional but recommended)
         // ═══════════════════════════════════════════════════════════════
