@@ -17,7 +17,7 @@
 use anyhow::Context;
 use bencodex::{BencodexValue, BencodexKey, decode_borrowed};
 use rocksdb::{DB, Options};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const CANONICAL_CHAIN_KEY: u8 = b'C'; // 0x43
 const INDEX_KEY_PREFIX: u8 = b'I'; // 0x49
@@ -53,6 +53,56 @@ fn open_ro(path: &Path) -> anyhow::Result<DB> {
     opts.create_if_missing(false);
     DB::open_for_read_only(&opts, path, false)
     .with_context(|| format!("Abrindo DB: {}", path.display()))
+}
+
+/// Abre um RocksDB em secondary mode + try_catch_up_with_primary().
+/// Isso garante que dados no WAL (memtable não flushed) sejam visíveis.
+///
+/// O open_for_read_only NÃO faz replay do WAL — se o tip mais recente
+/// está no WAL (ainda não flushed para SST), o iterator não o vê e retorna
+/// um tip antigo. O C# usa RocksDBStore() (modo read-write) que faz replay.
+///
+/// Retorna (DB, Option<PathBuf>) — o PathBuf é o temp dir que precisa ser
+/// limpo DEPOIS que o DB for dropado.
+fn open_catchup(path: &Path) -> anyhow::Result<(DB, Option<PathBuf>)> {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "nc-snap-catchup-{}-{}",
+        std::process::id(),
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir)?;
+
+    let mut opts = Options::default();
+    opts.create_if_missing(false);
+    opts.set_max_open_files(500);
+    opts.set_paranoid_checks(false);
+    opts.set_skip_stats_update_on_db_open(true);
+
+    // BlockBasedOptions com format_version(5) para compatibilidade com Libplanet RocksDB
+    let mut block_opts = rocksdb::BlockBasedOptions::default();
+    block_opts.set_format_version(5);
+    opts.set_block_based_table_factory(&block_opts);
+
+    match DB::open_as_secondary(&opts, path, &temp_dir) {
+        Ok(db) => {
+            db.try_catch_up_with_primary()
+                .with_context(|| format!("Catch up failed for {}", path.display()))?;
+            Ok((db, Some(temp_dir)))
+        }
+        Err(e) => {
+            // Fallback para read-only se secondary falhar
+            // (ex: source é um checkpoint já finalizado sem primary ativo)
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            eprintln!(
+                "  ⚠ Secondary mode failed for {}: {} — falling back to read-only",
+                path.display(), e
+            );
+            let db = DB::open_for_read_only(&opts, path, false)
+                .with_context(|| format!("Abrindo DB: {}", path.display()))?;
+            Ok((db, None))
+        }
+    }
 }
 
 /// Encontra o canonical chain ID (key `C` / 0x43 → GUID 16 bytes).
@@ -375,8 +425,9 @@ pub fn read_state_root_from_checkpoint(
         );
     }
 
-    let chain_db = open_ro(&chain_path)?;
-    let block_index_db = open_ro(&block_index_path)?;
+    // Usa secondary mode + catch_up para ver dados no WAL (tip recente)
+    let (chain_db, chain_temp) = open_catchup(&chain_path)?;
+    let (block_index_db, bi_temp) = open_catchup(&block_index_path)?;
 
     let canonical_chain_id =
         find_chain_id(&chain_db).context("Falha ao encontrar canonical chain ID")?;
@@ -394,7 +445,7 @@ pub fn read_state_root_from_checkpoint(
     // Busca epoch DB name
     let epoch_db_name = get_block_epoch_db_name(&block_index_db, &block_hash)?;
 
-    // Abre epoch DB
+    // Abre epoch DB (catchup pra garantir consistência)
     let epoch_db_path = block_root_path.join(&epoch_db_name);
     if !epoch_db_path.exists() {
         anyhow::bail!(
@@ -403,16 +454,26 @@ pub fn read_state_root_from_checkpoint(
             block_root_path.display()
         );
     }
-    let epoch_db = open_ro(&epoch_db_path)?;
+    let (epoch_db, epoch_temp) = open_catchup(&epoch_db_path)?;
 
     // Extrai StateRootHash do BlockDigest
     let state_root_hash = get_state_root_from_digest(&epoch_db, &block_hash)?;
 
-    Ok(ChainTip {
+    let result = ChainTip {
         state_root_hash,
         block_index: target_index,
         block_hash,
-    })
+    };
+
+    // Cleanup: drop DBs antes de remover temp dirs
+    drop(chain_db);
+    drop(block_index_db);
+    drop(epoch_db);
+    if let Some(t) = chain_temp { let _ = std::fs::remove_dir_all(t); }
+    if let Some(t) = bi_temp { let _ = std::fs::remove_dir_all(t); }
+    if let Some(t) = epoch_temp { let _ = std::fs::remove_dir_all(t); }
+
+    Ok(result)
 }
 
 /// Lê as informações completas do BlockHeader do checkpoint (para metadata generation).
