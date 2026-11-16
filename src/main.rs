@@ -678,6 +678,74 @@ fn main() {
             .unwrap_or(&source_path)
             .clone();
 
+            // ── OFFLINE PRUNE (quando !live e prune == true) ──
+            // Na Opção 1 para o blocoteste, a poda acontece diretamente no states/ do blockchain,
+            // validando o novo banco e realizando o swap seguro in-place.
+            if !live && prune && (mode_enum == SnapshotMode::State || mode_enum == SnapshotMode::Full || mode_enum == SnapshotMode::Partition) {
+                if !json {
+                    eprintln!("🧹 Running Offline GC Pipeline directly on {}/states...", source_path.display());
+                    eprintln!("   ⚠️ Offline mode: states/ will be pruned and swapped in-place!");
+                }
+
+                let state_root_hex = match get_state_root_from_checkpoint_hybrid(
+                    &source_path,
+                    block_before,
+                    json,
+                ) {
+                    Ok((srh, _block_index)) => srh,
+                    Err(e) => {
+                        eprintln!("⚠ Could not read state root: {} — skipping prune", e);
+                        String::new()
+                    }
+                };
+
+                if !state_root_hex.is_empty() {
+                    let states_src = source_path.join("states");
+                    let states_gc = source_path.join("states_gc");
+                    let states_old = source_path.join("states_old");
+
+                    let _ = std::fs::remove_dir_all(&states_gc);
+
+                    match pipeline::run_gc_pipeline(
+                        &states_src,
+                        &states_gc,
+                        &state_root_hex,
+                        json,
+                    ) {
+                        Ok(_) => {
+                            // Swap atômico com rollback se falhar
+                            let swap_res = (|| -> std::io::Result<()> {
+                                if states_old.exists() {
+                                    std::fs::remove_dir_all(&states_old)?;
+                                }
+                                std::fs::rename(&states_src, &states_old)?;
+                                if let Err(e) = std::fs::rename(&states_gc, &states_src) {
+                                    let _ = std::fs::rename(&states_old, &states_src);
+                                    return Err(e);
+                                }
+                                let _ = std::fs::remove_dir_all(&states_old);
+                                Ok(())
+                            })();
+
+                            match swap_res {
+                                Ok(_) => {
+                                    if !json {
+                                        eprintln!("✅ Offline states/ pruned and swapped in-place successfully!");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("⚠ Failed to swap states: {} — original states preserved", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("⚠ GC Pipeline failed: {} — keeping original states/", e);
+                            let _ = std::fs::remove_dir_all(&states_gc);
+                        }
+                    }
+                }
+            }
+
             if staging_dir.is_some() && !json {
                 eprintln!("   Archiving from staging (9c-blockchain untouched)");
             }
