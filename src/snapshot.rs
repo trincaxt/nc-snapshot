@@ -439,16 +439,20 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
         }
 
         // 1. Partition archive: block + tx epochs (com PARTITION_EXCLUDE)
-        //    Usa GetEpochLimit do bridge ou fallback para --epoch-limit
+        //    Se o usuário passou --epoch-limit explicitamente, RESPEITAR.
+        //    Senão, usa GetEpochLimit do bridge (como o C# oficial).
         let partition_dirs: Vec<String> = PARTITION_DIRS.iter().map(|s| s.to_string()).collect();
-        let partition_epoch_limit = if let Some(ref res) = bridge_res {
+        let partition_epoch_limit = if config.epoch_limit.is_some() {
+            // --epoch-limit explícito do CLI tem prioridade absoluta
+            config.epoch_limit
+        } else if let Some(ref res) = bridge_res {
             Some(get_epoch_limit_from_metadata(
                 res.latest_epoch,
                 res.current_metadata_block_epoch,
                 res.previous_metadata_block_epoch,
             ))
         } else {
-            config.epoch_limit
+            None
         };
         let partition_dir = output_dir.join("partition");
         fs::create_dir_all(&partition_dir)?;
@@ -461,6 +465,9 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
 
         if !config.json {
             eprintln!("📦 Creating partition snapshot (block + tx epochs)...");
+            if let Some(limit) = partition_epoch_limit {
+                eprintln!("   Epoch limit: >= {} (epochs below this are skipped)", limit);
+            }
         }
         let _partition_result = create_single_archive(
             source,
@@ -505,8 +512,11 @@ pub fn create_snapshot(config: &SnapshotConfig, bridge_res: Option<BridgeResult>
             let meta_path = meta_dir.join(format!("{}.json", res.partition_base_filename));
             fs::write(&meta_path, &res.stringfy_metadata)?;
             if !config.json {
-                eprintln!("   Metadata   : {}", meta_path.display());
+                eprintln!("📋 Metadata JSON written:");
+                eprintln!("   {}", meta_path.display());
             }
+        } else if !config.json {
+            eprintln!("⚠️ No metadata generated (--apv not provided or metadata fetch failed)");
         }
 
         return Ok(state_result);
