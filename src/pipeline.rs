@@ -17,18 +17,25 @@ pub fn run_gc_pipeline(
     source_states: &Path,
     dest_states: &Path,
     root_hash_hex: &str,
+    temp_dir: Option<&Path>,
     json: bool,
 ) -> anyhow::Result<()> {
     let pipeline_start = Instant::now();
 
-    let checkpoint_dir = source_states.parent().unwrap_or(Path::new("."));
-    let export_file = checkpoint_dir.join("states_export.bin");
+    let default_parent = source_states.parent().unwrap_or(Path::new("."));
+    let scratch_dir = temp_dir.unwrap_or(default_parent);
+    std::fs::create_dir_all(scratch_dir)?;
+
+    let export_file = scratch_dir.join("states_export.bin");
     let index_file = gc_index::index_path_for(&export_file);
-    let live_bits_file = checkpoint_dir.join("live_bits.bin");
+    let live_bits_file = scratch_dir.join("live_bits.bin");
 
     if !json {
         eprintln!("  Source: {}", source_states.display());
         eprintln!("  Dest : {}", dest_states.display());
+        if temp_dir.is_some() {
+            eprintln!("  Scratch: {}", scratch_dir.display());
+        }
         eprintln!("  Root : {}...", &root_hash_hex[..16]);
         eprintln!("  ⏳ Running GC Pipeline (Export + BFS + Prune + Validate)...");
         eprintln!();

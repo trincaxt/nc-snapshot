@@ -122,6 +122,10 @@ enum Commands {
             /// The snapshot may be slightly behind the chain tip (use --block-before to control).
             #[arg(long)]
             live: bool,
+
+            /// Custom directory for GC export and scratch files (~75GB, e.g. on another drive)
+            #[arg(long)]
+            export_dir: Option<PathBuf>,
     },
 
     /// Verify an existing archive's integrity
@@ -203,8 +207,10 @@ fn main() {
                 pruner_path: _,
                 prune_depth: _,
                 live,
+                export_dir,
         } => {
             let source_path = expand_tilde(&source);
+            let export_dir = export_dir.map(|p| expand_tilde(&p.to_string_lossy()));
             let threads = if threads == 0 {
                 num_cpus::get()
             } else {
@@ -281,6 +287,9 @@ fn main() {
                 eprintln!("  Threads : {}", threads);
                 if prune {
                     eprintln!("  Prune   : ON (states will be pruned)");
+                    if let Some(ref ed) = export_dir {
+                        eprintln!("  ExportDir: {}", ed.display());
+                    }
                 }
                 if live {
                     eprintln!("  Live    : ON (node may be running, using checkpoints)");
@@ -639,6 +648,7 @@ fn main() {
                                 &states_src,
                                 &states_gc,
                                 &state_root_hex,
+                                export_dir.as_deref(),
                                 json,
                             ) {
                                 Ok(_) => {
@@ -710,6 +720,7 @@ fn main() {
                         &states_src,
                         &states_gc,
                         &state_root_hex,
+                        export_dir.as_deref(),
                         json,
                     ) {
                         Ok(_) => {
