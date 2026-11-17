@@ -24,6 +24,7 @@ use crate::io_util::{read_record, HASH_LEN};
 
 pub const ENTRY_LEN: usize = HASH_LEN + 8;
 const MAX_BUCKET_BITS: u32 = 24; // 2^24 * 4 B = 64 MB de tabela no máximo
+#[allow(dead_code)]
 const CHUNK: usize = 4096; // nós por tarefa rayon
 
 /// states_export.bin -> states_export.idx
@@ -278,6 +279,7 @@ impl LiveSet {
 /// BFS por nível sobre o índice. Cada nível: ordena a fronteira por ordinal (= por offset),
 /// lê só esses registros do export (mmap) em paralelo e marca os filhos no bitset atômico.
 /// Filho que não existe no índice é ignorado (dangling ref), igual ao BFS fixpoint atual.
+#[allow(dead_code)]
 pub fn bfs_indexed(export: &[u8], index: &Index, roots: &[[u8; HASH_LEN]]) -> Result<LiveSet> {
     let n = index.len();
     let words: Vec<AtomicU64> = (0..(n + 63) / 64).map(|_| AtomicU64::new(0)).collect();
@@ -349,6 +351,7 @@ pub fn bfs_indexed(export: &[u8], index: &Index, roots: &[[u8; HASH_LEN]]) -> Re
 }
 
 /// Pipeline: export + índice -> bitset de vivos gravado em `live_bits_path`.
+#[allow(dead_code)]
 pub fn run_gc_filter_indexed(
     export_path: &Path,
     index_path: &Path,
@@ -370,6 +373,198 @@ pub fn run_gc_filter_indexed(
     let live = bfs_indexed(data, &index, &roots)?;
     live.save(live_bits_path)?;
     eprintln!("✅ {} nós vivos de {} ({} bytes de bitset)", live.count_ones(), live.len(), live.words.len() * 8);
+    Ok(live)
+}
+
+// ───────────────────────────── BFS em RAM (grafo CSR) ─────────────────────────────
+//
+// Por que existe: `bfs_indexed` lê UM registro do export por nó vivo (68,5M leituras
+// aleatórias de ~630 B num arquivo de ~110 GB). No NVMe isso leva minutos; num HD mecânico
+// (~90 leituras/s) leva dias. Aqui o export é lido UMA vez, em ordem (sequencial), só para
+// extrair "quem aponta para quem" como ordinais u32; o BFS roda inteiro na RAM.
+//
+// RAM (aprox.): offsets 8 B × N  +  edges 4 B × E  (+ o índice, que já é mmap).
+
+/// Ordinais por tarefa rayon na construção do grafo (~40 MB contíguos do export por tarefa).
+const GRAPH_CHUNK: usize = 1 << 16;
+
+/// Grafo de referências em CSR: filhos do ordinal `o` = edges[offsets[o]..offsets[o+1]].
+pub struct Graph {
+    offsets: Vec<u64>, // len = n + 1
+    edges: Vec<u32>,
+}
+
+impl Graph {
+    #[inline]
+    fn children(&self, o: u32) -> &[u32] {
+        let a = self.offsets[o as usize] as usize;
+        let b = self.offsets[o as usize + 1] as usize;
+        &self.edges[a..b]
+    }
+
+    #[allow(dead_code)]
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+}
+
+/// Varre o export em ordem de ordinal (= ordem de offset = leitura sequencial) e monta o grafo.
+/// Filho que não existe no índice é ignorado (dangling ref), igual ao `bfs_indexed`.
+pub fn build_graph(map: &Mmap, index: &Index) -> Result<Graph> {
+    let t = std::time::Instant::now();
+    let export: &[u8] = &map[..];
+    let n = index.len();
+
+    let ranges: Vec<(usize, usize)> = (0..n)
+        .step_by(GRAPH_CHUNK)
+        .map(|s| (s, (s + GRAPH_CHUNK).min(n)))
+        .collect();
+
+    // collect() de rayon preserva a ordem dos ranges
+    let parts: Vec<(Vec<u32>, Vec<u32>)> = ranges
+        .par_iter()
+        .map(|&(s, e)| -> Result<(Vec<u32>, Vec<u32>)> {
+            // Pede ao kernel a região inteira deste pedaço de uma vez (I/O grande e contíguo,
+            // bom para HD mecânico). É só uma dica: erro aqui é ignorado.
+            let lo = index.offset(s as u32) as usize;
+            let hi = if e < n { index.offset(e as u32) as usize } else { export.len() };
+            let _ = map.advise_range(Advice::WillNeed, lo, hi - lo);
+
+            let mut counts: Vec<u32> = Vec::with_capacity(e - s);
+            let mut edges: Vec<u32> = Vec::new();
+            let mut buf: Vec<[u8; HASH_LEN]> = Vec::with_capacity(32);
+            for o in s..e {
+                let o = o as u32;
+                let off = index.offset(o) as usize;
+                let Some((key, value, _)) = read_record(export, off) else {
+                    bail!("Export truncado ou corrompido no offset {} (ordinal {})", off, o);
+                };
+                if key[..] != *index.key(o) {
+                    bail!("Índice não corresponde ao export no ordinal {}", o);
+                }
+                buf.clear();
+                extract_child_hashes(value, &mut buf);
+                let before = edges.len();
+                for c in &buf {
+                    if let Some(co) = index.lookup(c) {
+                        edges.push(co);
+                    }
+                }
+                counts.push((edges.len() - before) as u32);
+            }
+            Ok((counts, edges))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let total: usize = parts.iter().map(|(_, e)| e.len()).sum();
+    let mut offsets: Vec<u64> = Vec::with_capacity(n + 1);
+    let mut edges: Vec<u32> = Vec::with_capacity(total);
+    let mut acc = 0u64;
+    offsets.push(0);
+    for (counts, part_edges) in parts {
+        // `parts` é consumido: cada pedaço é liberado depois de copiado
+        for c in counts {
+            acc += c as u64;
+            offsets.push(acc);
+        }
+        edges.extend_from_slice(&part_edges);
+    }
+    debug_assert_eq!(offsets.len(), n + 1);
+    debug_assert_eq!(acc as usize, edges.len());
+
+    eprintln!(
+        "   Grafo: {} nós, {} arestas | {:.2} GB em RAM | {:.1}s",
+        n,
+        edges.len(),
+        (offsets.len() * 8 + edges.len() * 4) as f64 / 1e9,
+        t.elapsed().as_secs_f64()
+    );
+    Ok(Graph { offsets, edges })
+}
+
+#[inline]
+fn claim_bit(words: &mut [u64], o: u32) -> bool {
+    let m = 1u64 << (o & 63);
+    let w = &mut words[(o >> 6) as usize];
+    let was_clear = *w & m == 0;
+    *w |= m;
+    was_clear
+}
+
+/// BFS por nível sobre o grafo em RAM. Mesmo resultado que `bfs_indexed`.
+pub fn bfs_graph(index: &Index, graph: &Graph, roots: &[[u8; HASH_LEN]]) -> LiveSet {
+    let n = index.len();
+    let mut words = vec![0u64; (n + 63) / 64];
+
+    let mut frontier: Vec<u32> = Vec::new();
+    for r in roots {
+        if let Some(o) = index.lookup(r) {
+            if claim_bit(&mut words, o) {
+                frontier.push(o);
+            }
+        }
+    }
+
+    let mut level = 0usize;
+    let mut live = frontier.len() as u64;
+    while !frontier.is_empty() {
+        let t = std::time::Instant::now();
+        frontier.sort_unstable(); // ordinais próximos juntos: melhor localidade de cache
+        let size = frontier.len();
+
+        let mut next: Vec<u32> = Vec::new();
+        for &o in &frontier {
+            for &c in graph.children(o) {
+                if claim_bit(&mut words, c) {
+                    next.push(c);
+                }
+            }
+        }
+
+        live += next.len() as u64;
+        level += 1;
+        eprintln!(
+            "✓ Nível {}: leu {} nós | achou {} novos | {} vivos | {:.1}s",
+            level,
+            size,
+            next.len(),
+            live,
+            t.elapsed().as_secs_f64()
+        );
+        frontier = next;
+    }
+
+    LiveSet { words, n: n as u64 }
+}
+
+/// Pipeline alternativo a `run_gc_filter_indexed`: export + índice -> grafo em RAM -> bitset de vivos.
+pub fn run_gc_filter_graph(
+    export_path: &Path,
+    index_path: &Path,
+    roots: Vec<[u8; HASH_LEN]>,
+    live_bits_path: &Path,
+) -> Result<LiveSet> {
+    eprintln!("🧹 GC Filter (BFS em RAM via grafo CSR)");
+    let file = File::open(export_path)
+        .with_context(|| format!("Falha ao abrir export: {}", export_path.display()))?;
+    let mmap = unsafe { Mmap::map(&file)? };
+    // varredura sequencial: liga o readahead do kernel (o oposto do bfs_indexed)
+    let _ = mmap.advise(Advice::Sequential);
+    let data: &[u8] = &mmap[..];
+
+    let t = std::time::Instant::now();
+    let index = Index::open(index_path, data)?;
+    eprintln!("   Índice: {} entradas validadas em {:.1}s", index.len(), t.elapsed().as_secs_f64());
+
+    let graph = build_graph(&mmap, &index)?;
+    let live = bfs_graph(&index, &graph, &roots);
+    live.save(live_bits_path)?;
+    eprintln!(
+        "✅ {} nós vivos de {} ({} bytes de bitset)",
+        live.count_ones(),
+        live.len(),
+        live.words.len() * 8
+    );
     Ok(live)
 }
 
@@ -603,5 +798,83 @@ mod tests {
         for i in 2000..2500 {
             assert!(index.lookup(&h(i)).is_none());
         }
+    }
+
+    // ───────── BFS em RAM (grafo CSR) tem que dar EXATAMENTE o mesmo conjunto que o BFS indexado ─────────
+
+    /// roda `run_gc_filter_indexed` e `run_gc_filter_graph` no mesmo export; devolve (indexado, grafo)
+    fn indexed_vs_graph(nodes: &[&Node], roots: Vec<H>) -> (HashSet<H>, HashSet<H>) {
+        let dir = tempfile::tempdir().unwrap();
+        let exp = dir.path().join("export.bin");
+        let idx = index_path_for(&exp);
+        write_export(&exp, nodes);
+        build_index_from_export(&exp, &idx).unwrap();
+
+        let b1 = dir.path().join("a.bits");
+        let b2 = dir.path().join("b.bits");
+        run_gc_filter_indexed(&exp, &idx, roots.clone(), &b1).unwrap();
+        run_gc_filter_graph(&exp, &idx, roots, &b2).unwrap();
+
+        // o arquivo de bitset tem que ser byte a byte idêntico
+        assert_eq!(std::fs::read(&b1).unwrap(), std::fs::read(&b2).unwrap(), "bitsets diferentes");
+
+        let file = File::open(&exp).unwrap();
+        let mm = unsafe { Mmap::map(&file).unwrap() };
+        let index = Index::open(&idx, &mm[..]).unwrap();
+        let to_set = |p: &Path| -> HashSet<H> {
+            let l = LiveSet::load(p).unwrap();
+            (0..index.len() as u32)
+                .filter(|&o| l.get(o as u64))
+                .map(|o| <H>::try_from(index.key(o)).unwrap())
+                .collect()
+        };
+        (to_set(&b1), to_set(&b2))
+    }
+
+    #[test]
+    fn graph_equals_indexed_on_deep_chains_and_edge_cases() {
+        for depth in [1u64, 2, 19, 300] {
+            let nodes: Vec<Node> = (0..depth)
+                .map(|i| Node { key: h(i), children: if i + 1 < depth { vec![h(i + 1)] } else { vec![] } })
+                .collect();
+            let refs: Vec<&Node> = nodes.iter().collect();
+            let (a, b) = indexed_vs_graph(&refs, vec![h(0)]);
+            assert_eq!(a.len() as u64, depth);
+            assert_eq!(a, b, "profundidade {depth}");
+        }
+        // dangling, lixo e raiz inexistente
+        let x = Node { key: h(1), children: vec![h(2), h(999)] };
+        let y = Node { key: h(2), children: vec![] };
+        let g = Node { key: h(3), children: vec![h(2)] };
+        let (a, b) = indexed_vs_graph(&[&g, &y, &x], vec![h(1)]);
+        assert_eq!(b, HashSet::from([h(1), h(2)]));
+        assert_eq!(a, b);
+        let (a, b) = indexed_vs_graph(&[&g, &y, &x], vec![h(12345)]);
+        assert!(a.is_empty() && b.is_empty());
+    }
+
+    /// 200 mil nós > 3 pedaços de GRAPH_CHUNK: exercita a emenda entre pedaços (counts/offsets/edges).
+    #[test]
+    fn graph_equals_indexed_on_large_random_graph_multi_chunk() {
+        let mut s: u64 = 0x0BAD_C0FF_EE12_3457;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let n = 200_000u64;
+        let mut nodes: Vec<Node> = (0..n).map(|i| Node { key: h(i), children: vec![] }).collect();
+        for i in 0..n as usize {
+            for _ in 0..(rnd() % 4) {
+                let c = if rnd() % 10 == 0 { h(n + rnd() % 50) } else { h(rnd() % n) };
+                nodes[i].children.push(c);
+            }
+        }
+        let refs: Vec<&Node> = nodes.iter().collect();
+        let roots = vec![h(0), h(rnd() % n), h(rnd() % n)];
+        let (a, b) = indexed_vs_graph(&refs, roots);
+        assert!(a.len() > 1000, "grafo de teste degenerado ({} vivos)", a.len());
+        assert_eq!(a, b);
     }
 }

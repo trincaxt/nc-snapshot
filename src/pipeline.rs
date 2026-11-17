@@ -68,7 +68,7 @@ pub fn run_gc_pipeline(
     let root_bytes = hex_to_hash32(root_hash_hex)?;
     let roots = vec![root_bytes];
 
-    gc_index::run_gc_filter_indexed(&export_file, &index_file, roots, &live_bits_file)?;
+    gc_index::run_gc_filter_graph(&export_file, &index_file, roots, &live_bits_file)?;
     let phase2_elapsed = phase2_start.elapsed().as_secs_f64();
 
     // ── Phase 3: Prune ──────────────────────────────────────────
