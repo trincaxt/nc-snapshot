@@ -126,6 +126,12 @@ enum Commands {
             /// Custom directory for GC export and scratch files (~75GB, e.g. on another drive)
             #[arg(long)]
             export_dir: Option<PathBuf>,
+
+            /// Custom directory for RocksDB live checkpoints.
+            /// Must be on the same filesystem as --source for instant hard links.
+            /// Defaults to .nc-snapshot-live-checkpoint in the parent directory of --source.
+            #[arg(long)]
+            checkpoint_dir: Option<PathBuf>,
     },
 
     /// Verify an existing archive's integrity
@@ -208,9 +214,11 @@ fn main() {
                 prune_depth: _,
                 live,
                 export_dir,
+                checkpoint_dir,
         } => {
             let source_path = expand_tilde(&source);
             let export_dir = export_dir.map(|p| expand_tilde(&p.to_string_lossy()));
+            let checkpoint_dir = checkpoint_dir.map(|p| expand_tilde(&p.to_string_lossy()));
             let threads = if threads == 0 {
                 num_cpus::get()
             } else {
@@ -293,6 +301,9 @@ fn main() {
                 }
                 if live {
                     eprintln!("  Live    : ON (node may be running, using checkpoints)");
+                    if let Some(ref cd) = checkpoint_dir {
+                        eprintln!("  CheckpointDir: {}", cd.display());
+                    }
                 }
                 if let Some(el) = epoch_limit {
                     eprintln!("  Epoch≥  : {}", el);
@@ -321,8 +332,12 @@ fn main() {
             let mut live_checkpoint_dir: Option<PathBuf> = None;
 
             if live && staging_dir.is_none() {
-                let output_parent = final_output.parent().unwrap_or(Path::new("."));
-                let checkpoint_base = output_parent.join(".nc-snapshot-live-checkpoint");
+                let checkpoint_base = if let Some(ref cd) = checkpoint_dir {
+                    cd.clone()
+                } else {
+                    let source_parent = source_path.parent().unwrap_or(Path::new("."));
+                    source_parent.join(".nc-snapshot-live-checkpoint")
+                };
 
                 let _ = std::fs::remove_dir_all(&checkpoint_base);
                 let _ = std::fs::create_dir_all(&checkpoint_base);
