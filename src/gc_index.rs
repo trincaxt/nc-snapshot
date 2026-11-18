@@ -411,6 +411,16 @@ impl Graph {
 /// Varre o export em ordem de ordinal (= ordem de offset = leitura sequencial) e monta o grafo.
 /// Filho que não existe no índice é ignorado (dangling ref), igual ao `bfs_indexed`.
 pub fn build_graph(map: &Mmap, index: &Index) -> Result<Graph> {
+    // NC_GRAPH_THREADS=N limita quantos pedaços do export são lidos ao mesmo tempo.
+    // Em HD mecânico, menos threads = menos seeks entre regiões do arquivo. Sem a variável: pool padrão.
+    let threads = std::env::var("NC_GRAPH_THREADS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&t| t > 0);
+    build_graph_with_threads(map, index, threads)
+}
+
+pub fn build_graph_with_threads(map: &Mmap, index: &Index, threads: Option<usize>) -> Result<Graph> {
     let t = std::time::Instant::now();
     let export: &[u8] = &map[..];
     let n = index.len();
@@ -421,7 +431,8 @@ pub fn build_graph(map: &Mmap, index: &Index) -> Result<Graph> {
         .collect();
 
     // collect() de rayon preserva a ordem dos ranges
-    let parts: Vec<(Vec<u32>, Vec<u32>)> = ranges
+    let work = || -> Result<Vec<(Vec<u32>, Vec<u32>)>> {
+        ranges
         .par_iter()
         .map(|&(s, e)| -> Result<(Vec<u32>, Vec<u32>)> {
             // Pede ao kernel a região inteira deste pedaço de uma vez (I/O grande e contíguo,
@@ -454,7 +465,20 @@ pub fn build_graph(map: &Mmap, index: &Index) -> Result<Graph> {
             }
             Ok((counts, edges))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()
+    };
+
+    let parts = match threads {
+        Some(t) => {
+            eprintln!("   Grafo: lendo com {} thread(s) (NC_GRAPH_THREADS)", t);
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(t)
+                .build()
+                .context("Falha ao criar o pool de threads do grafo")?
+                .install(work)?
+        }
+        None => work()?,
+    };
 
     let total: usize = parts.iter().map(|(_, e)| e.len()).sum();
     let mut offsets: Vec<u64> = Vec::with_capacity(n + 1);
@@ -876,5 +900,39 @@ mod tests {
         let (a, b) = indexed_vs_graph(&refs, roots);
         assert!(a.len() > 1000, "grafo de teste degenerado ({} vivos)", a.len());
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn graph_is_identical_for_any_thread_count() {
+        let mut s: u64 = 0x5EED_5EED_1234_ABCD;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let n = 150_000u64; // > 2 pedaços de GRAPH_CHUNK
+        let mut nodes: Vec<Node> = (0..n).map(|i| Node { key: h(i), children: vec![] }).collect();
+        for i in 0..n as usize {
+            for _ in 0..(rnd() % 4) {
+                nodes[i].children.push(h(rnd() % (n + 20)));
+            }
+        }
+        let refs: Vec<&Node> = nodes.iter().collect();
+        let dir = tempfile::tempdir().unwrap();
+        let exp = dir.path().join("export.bin");
+        let idx = index_path_for(&exp);
+        write_export(&exp, &refs);
+        build_index_from_export(&exp, &idx).unwrap();
+        let file = File::open(&exp).unwrap();
+        let mm = unsafe { Mmap::map(&file).unwrap() };
+        let index = Index::open(&idx, &mm[..]).unwrap();
+
+        let base = build_graph_with_threads(&mm, &index, None).unwrap();
+        for t in [1usize, 2, 3] {
+            let g = build_graph_with_threads(&mm, &index, Some(t)).unwrap();
+            assert_eq!(g.offsets, base.offsets, "offsets diferem com {t} thread(s)");
+            assert_eq!(g.edges, base.edges, "arestas diferem com {t} thread(s)");
+        }
     }
 }
