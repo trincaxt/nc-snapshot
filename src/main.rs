@@ -226,8 +226,14 @@ fn main() {
             };
             let mode_enum: SnapshotMode = mode.parse().unwrap_or(SnapshotMode::State);
 
-            // Pega o valor da flag epoch_validate
-            let validate_epoch = epoch_validate.unwrap_or(0);
+            // Determina a epoch mínima para o checkpoint (se --epoch-limit foi passado,
+            // não há motivo para linkar milhares de epochs antigas que serão descartadas).
+            let validate_epoch = match (epoch_validate, epoch_limit) {
+                (Some(ev), Some(el)) => ev.max(el),
+                (Some(ev), None) => ev,
+                (None, Some(el)) => el,
+                (None, None) => 0,
+            };
 
             // ── OFFLINE: fetch_metadata ANTES do checkpoint (source sem LOCK) ──
             // ── LIVE: fetch_metadata DEPOIS do checkpoint (no checkpoint, sem LOCK) ──
