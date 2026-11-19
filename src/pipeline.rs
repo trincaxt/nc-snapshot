@@ -133,3 +133,69 @@ pub fn run_gc_pipeline(
 
     Ok(())
 }
+
+/// Executa o GC Pipeline por Varredura Direta (3-scan, sem arquivo de export).
+pub fn run_scan_gc_pipeline(
+    source_states: &Path,
+    dest_states: &Path,
+    root_hash_hex: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    let pipeline_start = Instant::now();
+
+    if !json {
+        eprintln!("  Source: {}", source_states.display());
+        eprintln!("  Dest : {}", dest_states.display());
+        eprintln!("  Root : {}...", &root_hash_hex[..16]);
+        eprintln!("  ⏳ Running 3-Scan GC Pipeline directly on RocksDB (no export file)...");
+        eprintln!();
+    }
+
+    let root_bytes = hex_to_hash32(root_hash_hex)?;
+    let roots = vec![root_bytes];
+
+    let src = crate::gc_scan_rocks::RocksSource::open(source_states)?;
+    let mut sink = crate::gc_scan_rocks::RocksSink::create(dest_states)?;
+
+    let stats = crate::gc_scan::run_scan_gc(&src, &roots, &mut sink)?;
+
+    // ── Phase 4: Validate ───────────────────────────────────────
+    let phase4_start = Instant::now();
+    if !json {
+        eprintln!("🔍 Phase 4: Validating pruned states/ 🦀...");
+    }
+
+    chain_reader::validate_states(dest_states)
+        .context("Failed to validate pruned states/")?;
+    let phase4_elapsed = phase4_start.elapsed().as_secs_f64();
+
+    if !json {
+        eprintln!("  ✅ Validation passed!  |  {:.1}s", phase4_elapsed);
+    }
+
+    if !json {
+        let total_elapsed = pipeline_start.elapsed().as_secs_f64();
+        let pct_removed = if stats.total > 0 {
+            stats.deleted as f64 / stats.total as f64 * 100.0
+        } else {
+            0.0
+        };
+
+        eprintln!("✅ 3-Scan GC Pipeline complete! 🦀");
+        eprintln!("  📊 Scan 1 (Keys Index): {:.1}s", stats.secs_index);
+        eprintln!("  📊 Scan 2 (Graph CSR):  {:.1}s", stats.secs_graph);
+        eprintln!("  📊 In-Memory BFS:       {:.1}s", stats.secs_bfs);
+        eprintln!("  📊 Scan 3 (Prune):      {:.1}s", stats.secs_prune);
+        eprintln!("  📊 Phase 4 (Validate):  {:.1}s", phase4_elapsed);
+        eprintln!("  ⏱️ Total time:           {:.1} min", total_elapsed / 60.0);
+        eprintln!(
+            "  💾 Nodes: {} → {} ({} deleted, {:.1}% removed)",
+            stats.total,
+            stats.live,
+            stats.deleted,
+            pct_removed
+        );
+    }
+
+    Ok(())
+}

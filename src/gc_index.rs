@@ -395,8 +395,14 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Monta o grafo a partir de partes já prontas (usado pelo pipeline por varredura, `gc_scan`).
+    pub fn from_parts(offsets: Vec<u64>, edges: Vec<u32>) -> Self {
+        debug_assert_eq!(*offsets.last().unwrap_or(&0) as usize, edges.len());
+        Graph { offsets, edges }
+    }
+
     #[inline]
-    fn children(&self, o: u32) -> &[u32] {
+    pub fn children(&self, o: u32) -> &[u32] {
         let a = self.offsets[o as usize] as usize;
         let b = self.offsets[o as usize + 1] as usize;
         &self.edges[a..b]
@@ -517,15 +523,18 @@ fn claim_bit(words: &mut [u64], o: u32) -> bool {
 
 /// BFS por nível sobre o grafo em RAM. Mesmo resultado que `bfs_indexed`.
 pub fn bfs_graph(index: &Index, graph: &Graph, roots: &[[u8; HASH_LEN]]) -> LiveSet {
-    let n = index.len();
+    let root_ords: Vec<u32> = roots.iter().filter_map(|r| index.lookup(r)).collect();
+    bfs_from_ordinals(index.len(), &root_ords, graph)
+}
+
+/// Núcleo do BFS: independe de como os ordinais foram obtidos (índice em arquivo ou em RAM).
+pub fn bfs_from_ordinals(n: usize, root_ords: &[u32], graph: &Graph) -> LiveSet {
     let mut words = vec![0u64; (n + 63) / 64];
 
     let mut frontier: Vec<u32> = Vec::new();
-    for r in roots {
-        if let Some(o) = index.lookup(r) {
-            if claim_bit(&mut words, o) {
-                frontier.push(o);
-            }
+    for &o in root_ords {
+        if claim_bit(&mut words, o) {
+            frontier.push(o);
         }
     }
 

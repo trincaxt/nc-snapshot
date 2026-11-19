@@ -5,6 +5,8 @@ mod types;
 mod verify;
 mod gc_filter;
 mod gc_index;
+mod gc_scan;
+mod gc_scan_rocks;
 mod pruner;
 mod exporter;
 mod chain_reader;
@@ -132,6 +134,10 @@ enum Commands {
             /// Defaults to .nc-snapshot-live-checkpoint in the parent directory of --source.
             #[arg(long)]
             checkpoint_dir: Option<PathBuf>,
+
+            /// Use direct 3-scan GC on RocksDB (no intermediate export file, in-memory CSR graph)
+            #[arg(long)]
+            scan_gc: bool,
     },
 
     /// Verify an existing archive's integrity
@@ -215,6 +221,7 @@ fn main() {
                 live,
                 export_dir,
                 checkpoint_dir,
+                scan_gc,
         } => {
             let source_path = expand_tilde(&source);
             let export_dir = export_dir.map(|p| expand_tilde(&p.to_string_lossy()));
@@ -300,9 +307,13 @@ fn main() {
                 eprintln!("  Level   : zstd-{}", level);
                 eprintln!("  Threads : {}", threads);
                 if prune {
-                    eprintln!("  Prune   : ON (states will be pruned)");
-                    if let Some(ref ed) = export_dir {
-                        eprintln!("  ExportDir: {}", ed.display());
+                    if scan_gc {
+                        eprintln!("  Prune   : ON (3-scan direct GC, no export file)");
+                    } else {
+                        eprintln!("  Prune   : ON (states will be pruned)");
+                        if let Some(ref ed) = export_dir {
+                            eprintln!("  ExportDir: {}", ed.display());
+                        }
                     }
                 }
                 if live {
@@ -665,13 +676,19 @@ fn main() {
                             let states_src = checkpoint_base.join("states");
                             let states_gc = checkpoint_base.join("states_gc");
 
-                            match pipeline::run_gc_pipeline(
-                                &states_src,
-                                &states_gc,
-                                &state_root_hex,
-                                export_dir.as_deref(),
-                                json,
-                            ) {
+                            let gc_res = if scan_gc {
+                                pipeline::run_scan_gc_pipeline(&states_src, &states_gc, &state_root_hex, json)
+                            } else {
+                                pipeline::run_gc_pipeline(
+                                    &states_src,
+                                    &states_gc,
+                                    &state_root_hex,
+                                    export_dir.as_deref(),
+                                    json,
+                                )
+                            };
+
+                            match gc_res {
                                 Ok(_) => {
                                     if let Err(e) = std::fs::remove_dir_all(&states_src) {
                                         eprintln!("⚠ Failed to remove old states/: {} — keeping original", e);
@@ -737,13 +754,19 @@ fn main() {
 
                     let _ = std::fs::remove_dir_all(&states_gc);
 
-                    match pipeline::run_gc_pipeline(
-                        &states_src,
-                        &states_gc,
-                        &state_root_hex,
-                        export_dir.as_deref(),
-                        json,
-                    ) {
+                    let gc_res = if scan_gc {
+                        pipeline::run_scan_gc_pipeline(&states_src, &states_gc, &state_root_hex, json)
+                    } else {
+                        pipeline::run_gc_pipeline(
+                            &states_src,
+                            &states_gc,
+                            &state_root_hex,
+                            export_dir.as_deref(),
+                            json,
+                        )
+                    };
+
+                    match gc_res {
                         Ok(_) => {
                             // Swap atômico com rollback se falhar
                             let swap_res = (|| -> std::io::Result<()> {

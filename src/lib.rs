@@ -4,6 +4,8 @@ pub mod errors;
 pub mod exporter;
 pub mod gc_filter;
 pub mod gc_index;
+pub mod gc_scan;
+pub mod gc_scan_rocks;
 pub mod io_util;
 pub mod metadata;
 pub mod node_detect;
