@@ -4,7 +4,7 @@
 //! o apaga no fim. Aqui o checkpoint do RocksDB (imutável) é varrido três vezes e só o que precisa
 //! ficar na RAM fica:
 //!
-//!   1. varredura 1: só as chaves, em ordem  -> `KeyIndex` (32 B por chave, tudo em RAM)
+//!   1. varredura 1: só as chaves, em ordem  -> `KeyIndex` (12 B por chave, tudo em RAM)
 //!   2. varredura 2: os valores              -> grafo CSR de referências (filhos como ordinais u32)
 //!   3. BFS em RAM a partir da raiz          -> `LiveSet` (1 bit por nó)
 //!   4. varredura 3: copia só os vivos       -> destino (`EntrySink`)
@@ -15,7 +15,12 @@
 //! O módulo é genérico sobre `EntrySource`/`EntrySink`. As implementações para RocksDB ficam em
 //! `gc_scan_rocks.rs`.
 //!
-//! RAM aproximada: 32 B × N (chaves) + 64 MB (tabela de prefixos) + 8 B × N + 4 B × E (grafo).
+//! RAM aproximada: 12 B × N (índice) + 64 MB (tabela de prefixos) + 8 B × N + 4 B × E (grafo).
+//!
+//! Índice compacto: de cada chave de 32 B guarda-se só os bytes 3..15 (12 B); os 3 primeiros são o
+//! balde da tabela de prefixos. Duas chaves reais com os mesmos 15 primeiros bytes abortam a
+//! construção (chance ~1e-19 para hashes). Uma chave AUSENTE com os mesmos 15 bytes de uma presente
+//! seria tomada como presente: o efeito é só manter um nó a mais, nunca apagar um vivo.
 
 use anyhow::{anyhow, bail, Result};
 use rayon::prelude::*;
@@ -38,6 +43,10 @@ const OUT_BATCH_BYTES: usize = 16 << 20;
 /// Janelas/lotes em voo entre leitor e consumidor.
 const QUEUE_DEPTH: usize = 3;
 
+/// Bytes 0..3 da chave = balde; bytes 3..15 ficam guardados.
+const KEY_SUFFIX_START: usize = 3;
+const KEY_SUFFIX_LEN: usize = 12;
+const KEY_PREFIX_LEN: usize = KEY_SUFFIX_START + KEY_SUFFIX_LEN;
 const KEY_CHUNK_BITS: usize = 20;
 const KEY_CHUNK: usize = 1 << KEY_CHUNK_BITS;
 const PREFIX_BUCKETS: usize = 1 << 24;
@@ -133,11 +142,11 @@ impl EntrySink for NullSink {
 
 // ───────────────────────────── índice de chaves em RAM ─────────────────────────────
 
-/// Todas as chaves (32 B) em ordem, em pedaços de 1M, mais uma tabela por prefixo de 3 bytes:
-/// `starts[p]` = ordinal da primeira chave com prefixo >= p. O lookup é um acesso à tabela mais
-/// uma busca binária num balde de poucas chaves.
+/// Chaves em ordem, guardando 12 B por chave (bytes 3..15), em pedaços de 1M, mais uma tabela por
+/// prefixo de 3 bytes: `starts[p]` = ordinal da primeira chave com prefixo >= p. O lookup é um acesso
+/// à tabela mais uma busca binária num balde de poucas chaves.
 pub struct KeyIndex {
-    chunks: Vec<Vec<[u8; HASH_LEN]>>,
+    chunks: Vec<Vec<[u8; KEY_SUFFIX_LEN]>>,
     n: usize,
     starts: Vec<u32>,
 }
@@ -147,29 +156,58 @@ impl KeyIndex {
         self.n
     }
 
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.n == 0
     }
 
+    /// RAM usada pelo índice, em bytes.
+    pub fn ram_bytes(&self) -> usize {
+        self.n * KEY_SUFFIX_LEN + self.starts.len() * 4
+    }
+
     #[inline]
-    pub fn key(&self, ord: usize) -> &[u8; HASH_LEN] {
+    fn suffix(&self, ord: usize) -> &[u8; KEY_SUFFIX_LEN] {
         &self.chunks[ord >> KEY_CHUNK_BITS][ord & (KEY_CHUNK - 1)]
     }
 
     #[inline]
     pub fn lookup(&self, k: &[u8; HASH_LEN]) -> Option<u32> {
         let p = ((k[0] as usize) << 16) | ((k[1] as usize) << 8) | k[2] as usize;
+        let want = &k[KEY_SUFFIX_START..KEY_PREFIX_LEN];
         let (mut lo, mut hi) = (self.starts[p] as usize, self.starts[p + 1] as usize);
         while lo < hi {
             let mid = (lo + hi) / 2;
-            match self.key(mid).cmp(k) {
+            match self.suffix(mid).as_slice().cmp(want) {
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
                 std::cmp::Ordering::Equal => return Some(mid as u32),
             }
         }
         None
+    }
+
+    /// Balde (prefixo de 3 bytes) ao qual o ordinal pertence.
+    fn bucket_of(&self, ord: usize) -> usize {
+        self.starts.partition_point(|&s| (s as usize) <= ord) - 1
+    }
+
+    /// Avança o balde `p` até o que contém `ord` (os ordinais só crescem numa varredura).
+    #[inline]
+    fn advance_bucket(&self, mut p: usize, ord: usize) -> usize {
+        while p + 1 < PREFIX_BUCKETS && self.starts[p + 1] as usize <= ord {
+            p += 1;
+        }
+        p
+    }
+
+    /// A chave varrida na posição `ord` (balde `p`) é a mesma que o índice guardou? Confere os 15
+    /// primeiros bytes: basta para detectar o DB mudando ou os ordinais desalinhando.
+    #[inline]
+    fn matches(&self, p: usize, ord: usize, key: &[u8; HASH_LEN]) -> bool {
+        key[0] == (p >> 16) as u8
+            && key[1] == (p >> 8) as u8
+            && key[2] == p as u8
+            && self.suffix(ord).as_slice() == &key[KEY_SUFFIX_START..KEY_PREFIX_LEN]
     }
 }
 
@@ -200,7 +238,7 @@ impl Progress {
 pub fn build_key_index(src: &dyn EntrySource) -> Result<(KeyIndex, u64)> {
     let t = Instant::now();
     let prog = Progress::new("varredura 1: chaves");
-    let mut chunks: Vec<Vec<[u8; HASH_LEN]>> = Vec::new();
+    let mut chunks: Vec<Vec<[u8; KEY_SUFFIX_LEN]>> = Vec::new();
     let mut starts = vec![0u32; PREFIX_BUCKETS + 1];
     let mut filled = 0usize;
     let mut n = 0usize;
@@ -216,6 +254,14 @@ pub fn build_key_index(src: &dyn EntrySource) -> Result<(KeyIndex, u64)> {
             if key <= *p {
                 bail!("Chaves fora de ordem ou duplicadas na varredura (ordinal {})", n);
             }
+            if key[..KEY_PREFIX_LEN] == p[..KEY_PREFIX_LEN] {
+                bail!(
+                    "Colisão: duas chaves reais compartilham os mesmos {} primeiros bytes (ordinal {}). \
+                     O índice compacto não serve para este DB; use o pipeline com export.",
+                    KEY_PREFIX_LEN,
+                    n
+                );
+            }
         }
         if n >= u32::MAX as usize {
             bail!("Mais de 4 bilhões de chaves: o índice usa ordinais de 32 bits");
@@ -228,7 +274,10 @@ pub fn build_key_index(src: &dyn EntrySource) -> Result<(KeyIndex, u64)> {
         if n & (KEY_CHUNK - 1) == 0 {
             chunks.push(Vec::with_capacity(KEY_CHUNK));
         }
-        chunks.last_mut().expect("chunk existe").push(key);
+        chunks
+            .last_mut()
+            .expect("chunk existe")
+            .push(<[u8; KEY_SUFFIX_LEN]>::try_from(&key[KEY_SUFFIX_START..KEY_PREFIX_LEN]).expect("12 bytes"));
         n += 1;
         prev = Some(key);
         prog.tick(n);
@@ -239,14 +288,15 @@ pub fn build_key_index(src: &dyn EntrySource) -> Result<(KeyIndex, u64)> {
         filled += 1;
     }
 
+    let index = KeyIndex { chunks, n, starts };
     eprintln!(
         "   Índice: {} chaves em RAM ({:.2} GB) | {:.1}s{}",
         n,
-        (n * HASH_LEN + starts.len() * 4) as f64 / 1e9,
+        index.ram_bytes() as f64 / 1e9,
         t.elapsed().as_secs_f64(),
         if skipped > 0 { format!(" | {} chaves != 32 B ignoradas", skipped) } else { String::new() }
     );
-    Ok((KeyIndex { chunks, n, starts }, skipped))
+    Ok((index, skipped))
 }
 
 // ───────────────────────────── grafo por varredura ─────────────────────────────
@@ -316,9 +366,11 @@ pub fn build_graph_scan(src: &dyn EntrySource, index: &KeyIndex) -> Result<Graph
                         let mut counts: Vec<u32> = Vec::with_capacity(b - a);
                         let mut es: Vec<u32> = Vec::new();
                         let mut buf: Vec<[u8; HASH_LEN]> = Vec::with_capacity(32);
+                        let mut bucket = index.bucket_of(win.first + a);
                         for i in a..b {
                             let ord = win.first + i;
-                            if *index.key(ord) != win.keys[i] {
+                            bucket = index.advance_bucket(bucket, ord);
+                            if !index.matches(bucket, ord, &win.keys[i]) {
                                 bail!(
                                     "A varredura 2 divergiu da varredura 1 no ordinal {}: o DB mudou entre as varreduras?",
                                     ord
@@ -391,12 +443,18 @@ pub fn prune_scan(
     let outcome: Result<()> = std::thread::scope(|s| {
         let reader = s.spawn(move || -> Result<()> {
             let mut ord = 0usize;
+            let mut bucket = 0usize;
             let mut batch = KvBatch::default();
             src.scan(&mut |k, v| {
                 if k.len() != HASH_LEN {
                     return Ok(());
                 }
-                if ord >= index.len() || index.key(ord)[..] != *k {
+                if ord >= index.len() {
+                    bail!("A varredura 3 viu mais entradas que a varredura 1 (ordinal {}): o DB mudou entre as varreduras?", ord);
+                }
+                bucket = index.advance_bucket(bucket, ord);
+                let key: &[u8; HASH_LEN] = k.try_into().expect("32 bytes");
+                if !index.matches(bucket, ord, key) {
                     bail!("A varredura 3 divergiu da varredura 1 no ordinal {}: o DB mudou entre as varreduras?", ord);
                 }
                 if live.get(ord as u64) {
@@ -734,9 +792,9 @@ mod tests {
             let this = self.scans.fetch_add(1, Ordering::SeqCst) + 1;
             for (i, (k, v)) in self.entries.iter().enumerate() {
                 if this >= self.change_from_scan && i == self.change_at {
-                    // a chave muda: o ordinal deixa de bater com o índice
+                    // a chave muda (dentro dos 15 primeiros bytes): o ordinal deixa de bater com o índice
                     let mut k2 = k.clone();
-                    k2[31] ^= 0x01;
+                    k2[5] ^= 0x01;
                     f(&k2, v)?;
                 } else {
                     f(k, v)?;
