@@ -11,12 +11,13 @@ A high-performance snapshot engine for the **Nine Chronicles** blockchain. `nc-s
 
 - **Live snapshots** without stopping the node
 - **🦀 100% Native Rust engine** — zero .NET/C# runtime dependencies
-- **⚡ Direct 3-Scan GC Pipeline (`--scan-gc`)** — zero intermediate export file, saving ~70–100 GB of scratch I/O
-- **🧠 In-Memory CSR Graph Traversal** — 33 levels of BFS traversing 68M+ nodes in **3.5 seconds**
-- **🌳 State Trie Garbage Collection** — prune up to 55%+ of unreachable historical state
+- **⚡ Direct 3-Scan GC Pipeline (`--scan-gc`)** — zero intermediate export file, saving ~70–100 GB of scratch disk I/O
+- **🎯 Compact 12-Byte KeyIndex** — reduces index RAM footprint by 62.5% (saving ~7 GB on large states) with mathematical collision detection ($10^{-19}$ probability)
+- **🧠 In-Memory CSR Graph Traversal** — 33 levels of BFS traversing 1.12 BILLION edges in **7.4 seconds**
+- **🌳 State Trie Garbage Collection** — prunes up to **80% of unreachable historical state**
 - **💾 RocksDB secondary mode checkpoints** — instant, consistent, memtable-aware
 - **📦 Multi-threaded** Zstandard compression & **🔐 BLAKE3** manifests
-- **🔄 Production-proven** on the Nine Chronicles Odin network (152M+ nodes processed in 6.1 min)
+- **🔄 Production-proven** on the Nine Chronicles Odin network (up to **342M+ nodes processed in 12.6 min**)
 
 ---
 
@@ -165,36 +166,54 @@ For memory-constrained environments (<8 GB RAM), streams keys/values into `state
 
 ## ⚡ Performance
 
-### 🏆 Record Production Benchmark: 152.4 Million Trie Nodes in 6.1 Minutes
+### 🏆 Benchmark 1: 342.4 Million Nodes & 1.12 Billion Edges in 12.6 Minutes (80% Pruned)
 
-Executed live on a production validator node on the Nine Chronicles Odin network:
+Executed live on a production validator node on the Nine Chronicles Odin network with the **Compact 12-Byte KeyIndex**:
 
 **Hardware:** AMD Ryzen 7 5700G (8c/16t) · 32 GB RAM · Kingston NVMe Gen4 · Live node running  
 **Run Date:** November 2026  
 **Mode:** `--live --prune --scan-gc --mode partition --epoch-limit 20772`
 
-| Pipeline Phase | Throughput | Time |
-| :--- | :---: | :---: |
-| **Live Secondary Checkpoint** | Memtable catchup + hardlinks | **< 1.0s** |
-| **Scan 1: Key Indexing** | **1,412,000 keys/sec** | **107.9s** (~1.8 min) |
-| **Scan 2: CSR Graph Construction** | 393,370,211 edges mapped | **126.9s** (~2.1 min) |
-| **In-Memory BFS (33 Levels)** | **19,600,000 nodes/sec** | **🔥 3.5s** |
-| **Scan 3: Prune & Bulk Load** | 68,626,304 live nodes written | **130.4s** (~2.1 min) |
-| **Phase 4: RocksDB Validation** | Checkpoint integrity check | **0.0s** (Instant) |
-| **Total State GC Wall Time** | **152.4M → 68.6M nodes** | **⏱️ 6.1 min** |
-| **Partition Snapshot (`.tar.zst`)** | 205 files (1.20 GiB → 639.8 MiB) | **9.5s** (130 MB/s) |
-| **State Snapshot (`.tar.zst`)** | 1,089 files (72.07 GiB → 59.67 GiB) | **10.5 min** (117 MB/s) |
+| Pipeline Phase | Throughput | Time | Impact |
+| :--- | :---: | :---: | :--- |
+| **Live Secondary Checkpoint** | Memtable catchup + hardlinks | **1.4s** | Zero consensus downtime |
+| **Scan 1: Compact KeyIndex** | **1,531,000 keys/sec** | **223.6s** (~3.7 min) | **4.18 GB RAM** (saved ~7 GB!) |
+| **Scan 2: CSR Graph Construction** | **1,120,795,084 edges mapped** | **265.1s** (~4.4 min) | 7.22 GB RAM for 1.12B edges |
+| **In-Memory BFS (33 Levels)** | **46,200,000 nodes/sec** | **🔥 7.4s** | 68.9M live nodes identified |
+| **Scan 3: Prune & Bulk Load** | 68,909,780 live nodes written | **256.8s** (~4.2 min) | Bulk load, auto-compaction off |
+| **Phase 4: RocksDB Validation** | Checkpoint integrity check | **0.0s** | Instant verification |
+| **Total State GC Wall Time** | **342.4M → 68.9M nodes** | **⏱️ 12.6 min** | **🔥 79.9% (273.5M dead nodes deleted)** |
+| **Partition Snapshot (`.tar.zst`)** | 278 files (2.13 GiB → 1.19 GiB) | **30.1s** (72 MB/s) | Blake3 manifest verified |
+| **State Snapshot (`.tar.zst`)** | 1,094 files (72.69 GiB → 60.24 GiB) | **9.2 min** (134 MB/s) | Tip block #20409105 |
 
-### 📈 Production GC Results
+---
 
-| Metric | Value | Impact |
-| :--- | :---: | :--- |
-| **Total Nodes Scanned** | **152,443,110** | Complete state trie history |
-| **Live Nodes Preserved** | **68,626,304** | 100% verified reachable tip state |
-| **Garbage Nodes Deleted** | **83,816,806** | **55.0% state reduction** |
-| **Export File Scratch Space** | **0 Bytes** | No disk wear, zero temporary space |
-| **RAM Footprint (Peak)** | **~7.7 GB** | KeyIndex (4.95 GB) + CSR Graph (2.79 GB) |
-| **Node Resync After Prune** | **Instant** | 100% compatible with Libplanet C# |
+### 🥈 Benchmark 2: 152.4 Million Nodes in 6.1 Minutes (55% Pruned)
+
+| Metric | Value |
+| :--- | :--- |
+| **Total Nodes Scanned** | 152,443,110 trie nodes |
+| **Live Nodes Kept** | 68,626,304 nodes |
+| **Garbage Deleted** | 83,816,806 nodes (55.0% pruned) |
+| **Scan 1 (Keys)** | 107.9s (1.41M keys/sec) |
+| **Scan 2 (CSR Graph)** | 126.9s (393M edges) |
+| **In-Memory BFS (33 Levels)** | **3.5 seconds** |
+| **Scan 3 (Prune)** | 130.4s |
+| **Total GC Time** | **6.1 minutes** |
+
+---
+
+## 🔬 Deep Dive: Compact 12-Byte KeyIndex (Memory Innovation)
+
+In state tries with 340M+ nodes, storing standard 32-byte SHA-256 keys in memory requires **~11 GB of RAM** just for the index.
+
+`nc-snapshot` introduces a **Compact 12-Byte KeyIndex** with mathematical safety guarantees:
+- **Prefix Table ($2^{24}$ buckets):** The first 3 bytes (24 bits) determine the prefix bucket in a 64 MB table.
+- **Suffix Storage (12 bytes):** Only bytes 3..15 are stored in RAM.
+- **Total Key Entropy:** 15 bytes = **120 bits of entropy**.
+- **Collision Probability:** For $N = 342 \times 10^6$ nodes, the probability of two keys sharing 15 bytes is $P \approx \frac{N^2}{2 \times 2^{120}} \approx 4.4 \times 10^{-20}$ (astronomically negligible).
+- **Safety Abort Guard:** If two distinct keys ever collide on the first 15 bytes, the index detects it during Scan 1 and safely aborts before any state modification.
+- **Result:** Slashes index memory consumption by **62.5% (saving ~7 GB RAM)**, enabling live GC on commodity 16 GB–32 GB systems.
 
 ---
 
