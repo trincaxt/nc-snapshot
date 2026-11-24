@@ -386,14 +386,17 @@ pub fn build_graph_scan(src: &dyn EntrySource, index: &KeyIndex) -> Result<Graph
                                 }
                                 if let Some(co) = index.lookup(c) {
                                     es.push(co);
-                                } else if shape != crate::node_refs::NodeShape::Unknown {
-                                    // Se o nó tem formato formal de trie (Full, Short, Value),
-                                    // mas um filho de 32 bytes não existe no DB, detectamos a inconsistência.
+                                } else if shape == crate::node_refs::NodeShape::Full || shape == crate::node_refs::NodeShape::Short {
+                                    // Se o nó é FullNode ou ShortNode, todo filho é obrigatoriamente um nó do Trie.
+                                    // Se ele não existir no banco, trata-se de inconsistência estrutural fatal.
+                                    // (Obs: Para ValueNode, um binário de 32 bytes ausente é apenas dado bruto do jogador,
+                                    // não raiz de subtrie, portanto não é erro).
                                     bail!(
-                                        "Inconsistência no Merkle Trie detectada na RAM: filho {} referenciado pelo nó {} (ordinal {}) não existe no banco!",
+                                        "Inconsistência no Merkle Trie detectada na RAM: filho {} referenciado pelo nó {} (ordinal {}, formato {:?}) não existe no banco!",
                                         hex8(c),
                                         hex8(&win.keys[i]),
-                                        ord
+                                        ord,
+                                        shape
                                     );
                                 }
                             }
