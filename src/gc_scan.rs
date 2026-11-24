@@ -27,7 +27,6 @@ use rayon::prelude::*;
 use std::sync::mpsc::sync_channel;
 use std::time::Instant;
 
-use crate::gc_filter::extract_child_hashes;
 use crate::gc_index::{bfs_from_ordinals, Graph, LiveSet};
 use crate::io_util::HASH_LEN;
 
@@ -379,11 +378,23 @@ pub fn build_graph_scan(src: &dyn EntrySource, index: &KeyIndex) -> Result<Graph
                             let start = if i == 0 { 0 } else { win.ends[i - 1] };
                             let value = &win.data[start..win.ends[i]];
                             buf.clear();
-                            extract_child_hashes(value, &mut buf);
+                            let shape = crate::node_refs::extract_trie_refs(value, &mut buf);
                             let before = es.len();
                             for c in &buf {
+                                if *c == crate::node_refs::EMPTY_ROOT_HASH {
+                                    continue;
+                                }
                                 if let Some(co) = index.lookup(c) {
                                     es.push(co);
+                                } else if shape != crate::node_refs::NodeShape::Unknown {
+                                    // Se o nó tem formato formal de trie (Full, Short, Value),
+                                    // mas um filho de 32 bytes não existe no DB, detectamos a inconsistência.
+                                    bail!(
+                                        "Inconsistência no Merkle Trie detectada na RAM: filho {} referenciado pelo nó {} (ordinal {}) não existe no banco!",
+                                        hex8(c),
+                                        hex8(&win.keys[i]),
+                                        ord
+                                    );
                                 }
                             }
                             counts.push((es.len() - before) as u32);

@@ -9,6 +9,7 @@ pub mod gc_scan_rocks;
 pub mod io_util;
 pub mod metadata;
 pub mod node_detect;
+pub mod node_refs;
 pub mod pipeline;
 pub mod pruner;
 pub mod snapshot;

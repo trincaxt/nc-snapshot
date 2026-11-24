@@ -19,7 +19,6 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::gc_filter::extract_child_hashes;
 use crate::io_util::{read_record, HASH_LEN};
 
 pub const ENTRY_LEN: usize = HASH_LEN + 8;
@@ -319,7 +318,7 @@ pub fn bfs_indexed(export: &[u8], index: &Index, roots: &[[u8; HASH_LEN]]) -> Re
                         bail!("Índice não corresponde ao export no ordinal {}", o);
                     }
                     buf.clear();
-                    extract_child_hashes(value, &mut buf);
+                    crate::node_refs::extract_trie_refs(value, &mut buf);
                     for c in &buf {
                         if let Some(co) = index.lookup(c) {
                             if claim(co) {
@@ -460,7 +459,7 @@ pub fn build_graph_with_threads(map: &Mmap, index: &Index, threads: Option<usize
                     bail!("Índice não corresponde ao export no ordinal {}", o);
                 }
                 buf.clear();
-                extract_child_hashes(value, &mut buf);
+                crate::node_refs::extract_trie_refs(value, &mut buf);
                 let before = edges.len();
                 for c in &buf {
                     if let Some(co) = index.lookup(c) {

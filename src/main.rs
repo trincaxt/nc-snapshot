@@ -13,6 +13,7 @@ mod chain_reader;
 mod checkpoint_secondary;
 mod io_util;
 mod metadata;
+mod node_refs;
 mod pipeline;
 
 use clap::{Parser, Subcommand};
@@ -149,6 +150,28 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Deep verify state trie completeness from root hash (confirms 100% referenced nodes exist)
+    VerifyStateTrie {
+        /// Path to states directory (e.g. states_gc or states)
+        #[arg(short, long)]
+        states: PathBuf,
+
+        /// Root hash in hex
+        #[arg(short, long)]
+        root: String,
+    },
+
+    /// Read state root hash from a store directory (safe, read-only via secondary mode)
+    GetStateRoot {
+        /// Store source directory (e.g. /mnt/kingston/.../blocoteste/)
+        #[arg(short, long)]
+        source: PathBuf,
+
+        /// Blocks before tip to inspect (default 0)
+        #[arg(long, default_value = "0")]
+        block_before: usize,
+    },
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -187,7 +210,7 @@ fn get_state_root_from_checkpoint_hybrid(
 
     let srh = hex::encode(tip.state_root_hash);
     if !json {
-        eprintln!("  StateRoot: {}...", &srh[..16]);
+        eprintln!("  StateRoot: {}", srh);
         eprintln!("  Block #{}", tip.block_index);
     }
 
@@ -699,7 +722,7 @@ fn main() {
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("⚠ GC Pipeline failed: {} — using unpruned states/", e);
+                                    eprintln!("⚠ GC Pipeline failed: {:#} — using unpruned states/", e);
                                     let _ = std::fs::remove_dir_all(&states_gc);
                                 }
                             }
@@ -794,7 +817,7 @@ fn main() {
                             }
                         }
                         Err(e) => {
-                            eprintln!("⚠ GC Pipeline failed: {} — keeping original states/", e);
+                            eprintln!("⚠ GC Pipeline failed: {:#} — keeping original states/", e);
                             let _ = std::fs::remove_dir_all(&states_gc);
                         }
                     }
@@ -869,5 +892,53 @@ fn main() {
                 process::exit(1);
             }
         },
+
+        Commands::VerifyStateTrie { states, root } => {
+            let states_path = expand_tilde(&states.to_string_lossy());
+            eprintln!("🔍 Deep Verifying State Trie completeness...");
+            eprintln!("   States: {}", states_path.display());
+            eprintln!("   Root  : {}", root);
+
+            let root_bytes = match io_util::hex_to_hash32(&root) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("❌ Invalid root hash: {}", e);
+                    process::exit(1);
+                }
+            };
+
+            let start = std::time::Instant::now();
+            match node_refs::verify_state_trie_at_path(&states_path, &root_bytes) {
+                Ok(stats) => {
+                    eprintln!("✅ State Trie is 100% COMPLETE and CONSISTENT! 🦀");
+                    eprintln!("   Total nodes verified : {}", stats.nodes_visited);
+                    eprintln!("   Full nodes (17 slots): {}", stats.full_nodes);
+                    eprintln!("   Short nodes (2 slots): {}", stats.short_nodes);
+                    eprintln!("   Value nodes (leaves) : {}", stats.value_nodes);
+                    eprintln!("   Unknown/other nodes  : {}", stats.unknown_nodes);
+                    eprintln!("   Maximum trie depth   : {}", stats.max_depth);
+                    eprintln!("   Verification time    : {:.1}s", start.elapsed().as_secs_f64());
+                }
+                Err(e) => {
+                    eprintln!("❌ State Trie verification failed: {:#}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::GetStateRoot { source, block_before } => {
+            let source_path = expand_tilde(&source.to_string_lossy());
+            match chain_reader::read_state_root_from_checkpoint(&source_path, block_before as u64) {
+                Ok(tip) => {
+                    let srh = hex::encode(tip.state_root_hash);
+                    println!("StateRoot: {}", srh);
+                    println!("Block #{}", tip.block_index);
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to read state root: {:#}", e);
+                    process::exit(1);
+                }
+            }
+        }
     }
 }
